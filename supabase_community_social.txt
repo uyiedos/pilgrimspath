@@ -1,0 +1,71 @@
+
+-- ==========================================
+-- COMMUNITY SOCIAL FEATURES
+-- ==========================================
+
+-- 1. Community Posts
+create table if not exists public.community_posts (
+  id uuid default uuid_generate_v4() primary key,
+  community_id uuid references public.communities(id) on delete cascade not null,
+  user_id uuid references public.users(id) not null,
+  content text not null,
+  type text default 'general', -- 'general', 'prayer', 'testimony'
+  likes_count int default 0,
+  comments_count int default 0,
+  created_at timestamp with time zone default now()
+);
+
+-- 2. Community Comments
+create table if not exists public.community_comments (
+  id uuid default uuid_generate_v4() primary key,
+  post_id uuid references public.community_posts(id) on delete cascade not null,
+  user_id uuid references public.users(id) not null,
+  content text not null,
+  created_at timestamp with time zone default now()
+);
+
+-- 3. Post Likes (To prevent duplicate likes)
+create table if not exists public.community_post_likes (
+  post_id uuid references public.community_posts(id) on delete cascade not null,
+  user_id uuid references public.users(id) not null,
+  created_at timestamp with time zone default now(),
+  primary key (post_id, user_id)
+);
+
+-- 4. Indexes
+create index if not exists community_posts_comm_id_idx on public.community_posts (community_id);
+create index if not exists community_posts_created_at_idx on public.community_posts (created_at desc);
+create index if not exists community_comments_post_id_idx on public.community_comments (post_id);
+
+-- 5. RLS Policies
+alter table public.community_posts enable row level security;
+alter table public.community_comments enable row level security;
+alter table public.community_post_likes enable row level security;
+
+-- Posts: Public Read
+create policy "Public Read Posts" on public.community_posts for select using (true);
+-- Posts: Authenticated Insert
+create policy "Auth Insert Posts" on public.community_posts for insert to authenticated with check (auth.uid() = user_id);
+
+-- Comments: Public Read
+create policy "Public Read Comments" on public.community_comments for select using (true);
+-- Comments: Authenticated Insert
+create policy "Auth Insert Comments" on public.community_comments for insert to authenticated with check (auth.uid() = user_id);
+
+-- Likes: Read
+create policy "Public Read Likes" on public.community_post_likes for select using (true);
+-- Likes: Insert (Unique constraint handles duplicates via PK)
+create policy "Auth Insert Likes" on public.community_post_likes for insert to authenticated with check (auth.uid() = user_id);
+
+-- 6. RPC: Increment Post Likes
+create or replace function increment_post_likes(post_row_id uuid)
+returns void
+language plpgsql
+security definer
+as $$
+begin
+  update public.community_posts
+  set likes_count = likes_count + 1
+  where id = post_row_id;
+end;
+$$;
