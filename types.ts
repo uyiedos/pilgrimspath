@@ -14,15 +14,14 @@ export enum AppView {
   TV = 'TV',
   BIBLE = 'BIBLE',
   LEADERBOARD = 'LEADERBOARD',
-  ARCHIVE = 'ARCHIVE', // Renamed to "Avatars" in UI, keeping enum key for safety
+  ARCHIVE = 'ARCHIVE',
   WIKI = 'WIKI',
   TOKEN = 'TOKEN',
   PROFILE = 'PROFILE',
   SUPPORT = 'SUPPORT',
   ADMIN = 'ADMIN',
   ACTIVITIES = 'ACTIVITIES',
-  COMMUNITY = 'COMMUNITY',
-  MARKETPLACE = 'MARKETPLACE'
+  COMMUNITY = 'COMMUNITY'
 }
 
 export interface Badge {
@@ -210,26 +209,6 @@ export interface CommunityComment {
   users?: {
     username: string;
     avatar: string;
-  };
-}
-
-export interface MarketplaceListing {
-  id: string;
-  avatar_id: string;
-  seller_id: string;
-  price: number;
-  attached_xp: number; // New Field: XP infused into the listing
-  status: 'active' | 'sold' | 'cancelled';
-  created_at: string;
-  // Joined fields
-  users?: {
-    username: string;
-    total_points: number; 
-  };
-  avatar_history?: {
-    avatar_url: string;
-    style_prompt: string;
-    collection_name: string;
   };
 }
 

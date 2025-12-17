@@ -26,7 +26,6 @@ import ProfileView from './components/ProfileView';
 import SupportView from './components/SupportView';
 import AdminView from './components/AdminView';
 import CommunityView from './components/CommunityView';
-import MarketplaceView from './components/MarketplaceView';
 import Button from './components/Button';
 import GuestConversionModal from './components/GuestConversionModal';
 
@@ -64,7 +63,6 @@ const App: React.FC = () => {
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [wikiInitialTab, setWikiInitialTab] = useState<WikiTab>('guide');
   const [showConversionModal, setShowConversionModal] = useState(false);
-  const [treasuryBalance, setTreasuryBalance] = useState(0);
 
   // --- GUEST PERSISTENCE ---
   
@@ -92,16 +90,6 @@ const App: React.FC = () => {
       localStorage.setItem('journey_guest_state', JSON.stringify(gameState));
     }
   }, [gameState]);
-
-  // Load Treasury Stats
-  useEffect(() => {
-      const fetchTreasury = async () => {
-          const { data } = await supabase.from('treasury').select('balance').single();
-          if (data) setTreasuryBalance(data.balance);
-      };
-      fetchTreasury();
-      // Optional: Realtime subscription for treasury updates
-  }, [gameState.view]); // Refresh on view change for now
 
   // --- SUPABASE DATA LOADING ---
   const loadUserData = async (userId: string, currentPoints: number) => {
@@ -179,7 +167,7 @@ const App: React.FC = () => {
           type: j.type,
           content: j.content,
           reference: j.reference,
-          createdAt: j.createdAt
+          createdAt: j.created_at
       })) || [];
 
       // 7. Calculate Rank
@@ -321,7 +309,7 @@ const App: React.FC = () => {
   const handleGuestConversion = async (email: string, password: string, username: string) => {
       if (!gameState.user) return;
 
-      // 1. Sign Up (Generates NEW UUID)
+      // 1. Sign Up
       const { data: authData, error: authError } = await supabase.auth.signUp({
           email,
           password
@@ -330,12 +318,12 @@ const App: React.FC = () => {
       if (authError) throw authError;
       if (!authData.user) throw new Error("Conversion failed: No user returned");
 
-      const newUserId = authData.user.id; // CRITICAL: This is the new Supabase UUID
+      const newUserId = authData.user.id;
       const generatedRefCode = (username.substring(0, 3).toUpperCase() + Math.random().toString(36).substring(2, 8).toUpperCase()).replace(/[^A-Z0-9]/g, 'X');
 
       // 2. Transfer Profile Data
-      const { error: profileError } = await supabase.from('users').insert([{
-          id: newUserId, // Use NEW ID
+      await supabase.from('users').insert([{
+          id: newUserId,
           email: email,
           username: username,
           avatar: gameState.user.avatar,
@@ -344,15 +332,8 @@ const App: React.FC = () => {
           badges: gameState.user.badges,
           difficulty: gameState.user.difficulty,
           archetype: gameState.user.archetype,
-          referral_code: generatedRefCode,
-          daily_points_earned: gameState.user.dailyPointsEarned,
-          last_activity_date: gameState.user.lastActivityDate
+          referral_code: generatedRefCode
       }]);
-
-      if (profileError) {
-          console.error("Profile creation failed", profileError);
-          // Attempt to continue, but this is critical
-      }
 
       // 3. Transfer Progress
       const progressInserts = Object.entries(gameState.progress).map(([gameId, levelId]) => ({
@@ -402,43 +383,12 @@ const App: React.FC = () => {
           });
       }
 
-      // 7. Transfer Journal Entries (New)
-      if (gameState.journalEntries && gameState.journalEntries.length > 0) {
-          const journalInserts = gameState.journalEntries.map(j => ({
-              user_id: newUserId,
-              type: j.type,
-              content: j.content,
-              reference: j.reference,
-              created_at: j.createdAt
-          }));
-          await supabase.from('journal_entries').insert(journalInserts);
-      }
-
-      // 8. Record Avatar History (Initial State)
-      if (gameState.user.avatar) {
-          await supabase.from('avatar_history').insert({
-              user_id: newUserId,
-              avatar_url: gameState.user.avatar,
-              style_prompt: 'Migrated from Guest',
-              collection_name: 'Genesis'
-          });
-      }
-
-      // 9. Backfill Activity Feed (Join Event)
-      await supabase.from('activity_feed').insert({
-          user_id: newUserId,
-          username: username,
-          avatar: gameState.user.avatar,
-          activity_type: 'join',
-          details: { method: 'guest_conversion' }
-      });
-
-      // 10. Clear Guest Data & Update State
+      // 7. Clear Guest Data & Update State
       localStorage.removeItem('journey_guest_state');
       
       const realUser: User = {
           ...gameState.user,
-          id: newUserId, // Swap to new ID in state
+          id: newUserId,
           email,
           username,
           referralCode: generatedRefCode,
@@ -451,6 +401,7 @@ const App: React.FC = () => {
       }));
 
       AudioSystem.playAchievement();
+      // Optional: Auto login logic handled by state update
   };
 
   const handleUpdateUser = async (updatedUser: User) => {
@@ -939,12 +890,6 @@ const App: React.FC = () => {
             </div>
          </div>
          <div className="flex items-center gap-2 md:gap-4">
-             {/* Treasury Stats (Small) */}
-             <div className="hidden md:flex items-center gap-1 border border-green-800/50 bg-green-900/20 rounded px-2 py-1" title="Community Treasury">
-                 <span className="text-green-400 text-xs">🏛️</span>
-                 <span className="text-green-200 text-xs font-mono">{treasuryBalance.toLocaleString()}</span>
-             </div>
-
              {/* Language Dropdown */}
              <div className="pointer-events-auto relative group">
                 <select
@@ -1002,8 +947,7 @@ const App: React.FC = () => {
     gameState.view !== AppView.SUPPORT &&
     gameState.view !== AppView.ARCHIVE &&
     gameState.view !== AppView.ADMIN &&
-    gameState.view !== AppView.COMMUNITY &&
-    gameState.view !== AppView.MARKETPLACE;
+    gameState.view !== AppView.COMMUNITY;
 
   return (
     <>
@@ -1159,23 +1103,13 @@ const App: React.FC = () => {
                  <h3 className="text-sm md:text-lg font-retro text-white leading-tight">{t('leaderboard')}</h3>
               </div>
 
-              {/* Archive View (New) */}
+              {/* Pilgrim's Archive */}
               <div 
                 onClick={() => handleNav(AppView.ARCHIVE)}
                 className="col-span-1 bg-gray-800 rounded-2xl border-4 border-gray-500 hover:border-white cursor-pointer transition-all hover:-translate-y-1 relative overflow-hidden group p-4 flex flex-col items-center justify-center text-center"
               >
                 <div className="text-3xl md:text-4xl mb-2">🏛️</div>
                 <h3 className="text-sm md:text-lg font-retro text-white leading-tight">Archive</h3>
-              </div>
-
-               {/* Marketplace (New) */}
-               <div 
-                onClick={() => handleNav(AppView.MARKETPLACE)}
-                className="col-span-1 bg-gradient-to-br from-green-900 to-black rounded-2xl border-4 border-green-600 hover:border-green-400 cursor-pointer transition-all hover:-translate-y-1 relative overflow-hidden group p-4 flex flex-col items-center justify-center text-center"
-              >
-                <div className="text-3xl md:text-4xl mb-2">🛒</div>
-                <h3 className="text-sm md:text-lg font-retro text-white leading-tight">Marketplace</h3>
-                <span className="text-[9px] bg-green-500 text-black px-1 rounded font-bold mt-1 uppercase">Trade</span>
               </div>
 
                {/* Wiki */}
@@ -1217,16 +1151,6 @@ const App: React.FC = () => {
       {/* Archive View (New) */}
       {gameState.view === AppView.ARCHIVE && (
         <PilgrimsArchiveView onBack={handleBackToHome} />
-      )}
-
-      {/* Marketplace View */}
-      {gameState.view === AppView.MARKETPLACE && (
-        <MarketplaceView 
-          user={gameState.user} 
-          onBack={handleBackToHome} 
-          spendPoints={spendPoints}
-          onAddPoints={addPoints}
-        />
       )}
 
       {/* Game Library */}
@@ -1289,7 +1213,6 @@ const App: React.FC = () => {
           language={gameState.language}
           plans={gameState.plans}
           onUpdatePlans={handleUpdatePlans}
-          spendPoints={spendPoints}
         />
       )}
 
@@ -1301,7 +1224,6 @@ const App: React.FC = () => {
           onChat={() => { addPoints(5); unlockAchievement('socialite'); }}
           language={gameState.language}
           onSocialAction={handleSocialInteraction}
-          spendPoints={spendPoints}
         />
       )}
 
@@ -1369,7 +1291,6 @@ const App: React.FC = () => {
           onAwardBadge={awardBadge}
           onConvertGuest={() => setShowConversionModal(true)}
           onConvertGuestAction={handleGuestConversion}
-          spendPoints={spendPoints}
         />
       )}
 
@@ -1392,7 +1313,6 @@ const App: React.FC = () => {
           language={gameState.language}
           onAddPoints={addPoints}
           onConvertGuest={() => setShowConversionModal(true)}
-          spendPoints={spendPoints}
         />
       )}
 

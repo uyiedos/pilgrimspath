@@ -40,7 +40,7 @@ const BibleActivitiesView: React.FC<BibleActivitiesViewProps> = ({
       
       if (data) {
           const activityNames = Array.from(new Set(data.map(d => d.entity_context || '')));
-          setLearnedActivities(activityNames as string[]);
+          setLearnedActivities(activityNames);
       }
       setLoading(false);
   };

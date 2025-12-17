@@ -22,25 +22,13 @@ const PilgrimsArchiveView: React.FC<PilgrimsArchiveViewProps> = ({ onBack }) => 
   const [pilgrims, setPilgrims] = useState<PilgrimData[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
-  const [totalHolders, setTotalHolders] = useState(0);
   const PAGE_SIZE = 24;
-
-  useEffect(() => {
-    fetchPilgrims(0);
-    fetchStats();
-  }, []);
-
-  const fetchStats = async () => {
-      // Get global unique holders count
-      const { data } = await supabase.rpc('get_global_stats');
-      if (data && data.users) {
-          setTotalHolders(data.users);
-      }
-  };
 
   const fetchPilgrims = async (pageIndex: number) => {
     setLoading(true);
     try {
+      // In a real scenario, we'd join with avatar_history to get the exact collection of the *current* avatar
+      // For now, we'll infer it or default to 'Genesis' for display if not stored on user
       const { data, error } = await supabase
         .from('users')
         .select('id, username, avatar, joined_date, badges, total_points, archetype')
@@ -61,6 +49,10 @@ const PilgrimsArchiveView: React.FC<PilgrimsArchiveViewProps> = ({ onBack }) => 
     }
   };
 
+  useEffect(() => {
+    fetchPilgrims(0);
+  }, []);
+
   const loadMore = () => {
     const nextPage = page + 1;
     setPage(nextPage);
@@ -76,14 +68,14 @@ const PilgrimsArchiveView: React.FC<PilgrimsArchiveViewProps> = ({ onBack }) => 
         {/* Header */}
         <div className="flex flex-col md:flex-row justify-between items-center mb-8 border-b-4 border-purple-800 pb-6 bg-black/40 p-6 rounded-t-xl shadow-lg relative overflow-hidden">
            <div className="absolute top-0 right-0 bg-purple-600 text-white text-[10px] font-bold px-4 py-1 transform rotate-45 translate-x-4 translate-y-2 shadow-lg">
-               LIVE
+               BETA
            </div>
            
            <div className="flex items-center gap-4">
               <div className="text-5xl animate-float">💠</div>
               <div>
                 <h1 className="text-3xl md:text-5xl font-retro text-purple-400 drop-shadow-[4px_4px_0_rgba(0,0,0,1)]">
-                  AVATAR GALLERY
+                  JOURNEY NFT GALLERY
                 </h1>
                 <p className="text-gray-400 font-mono text-xs md:text-sm mt-2 tracking-widest uppercase">
                   Digital Souls • Minted on Faith
@@ -92,10 +84,8 @@ const PilgrimsArchiveView: React.FC<PilgrimsArchiveViewProps> = ({ onBack }) => 
            </div>
            
            <div className="mt-4 md:mt-0 flex flex-col items-end">
-               <div className="flex items-center gap-2 mb-2">
-                   <div className="bg-gray-900 border border-blue-500/50 px-3 py-1 rounded text-xs font-mono text-blue-300">
-                       👥 Unique Holders: {totalHolders}
-                   </div>
+               <div className="bg-gray-900 border border-purple-500/50 px-3 py-1 rounded mb-2 text-xs font-mono text-purple-300">
+                   ● Minting Status: Phase 2 (Soon)
                </div>
                <Button onClick={onBack} variant="secondary" className="bg-gray-900 border-gray-600 hover:bg-gray-800 text-xs">
                  🏠 Return Home
@@ -160,7 +150,7 @@ const PilgrimsArchiveView: React.FC<PilgrimsArchiveViewProps> = ({ onBack }) => 
                    </div>
                    
                    <div className="mt-auto pt-2 flex gap-1 justify-end">
-                       <button className="text-[10px] text-gray-500 hover:text-white transition-colors">Details</button>
+                       <button className="text-[10px] text-gray-500 hover:text-white transition-colors" title="View details (Coming Soon)">Details</button>
                    </div>
                 </div>
              </div>

@@ -375,7 +375,7 @@ const WikiView: React.FC<WikiViewProps> = ({ onBack, onNavigate, user, onUpdateU
             </div>
             <div>
                <h1 className="text-2xl md:text-3xl font-retro text-white leading-none">THE CODEX</h1>
-               <p className="text-gray-400 text-xs font-mono mt-1">v4.5 Knowledge Base</p>
+               <p className="text-gray-400 text-xs font-mono mt-1">v4.4 Knowledge Base</p>
             </div>
          </div>
 
@@ -520,11 +520,11 @@ const WikiView: React.FC<WikiViewProps> = ({ onBack, onNavigate, user, onUpdateU
                                 <span className="text-yellow-500">+</span>
                             </summary>
                             <div className="p-4 pt-0 text-sm text-gray-300 border-t border-gray-700 mt-2">
-                                <p className="mb-2">Unlock the Avatar Studio by reaching Level 5 (5,000 XP).</p>
+                                <p className="mb-2">Unlock the Avatar Studio by reaching Level 5 (10,000 XP).</p>
                                 <ul className="list-disc pl-5 space-y-1">
                                     <li>Select a 'Protocol' (Style Tier).</li>
                                     <li>Click Generate to forge a new identity. This creates a unique image stored in your <strong>Forged Collection</strong>.</li>
-                                    <li><strong>Cost:</strong> 1000 XP per generation.</li>
+                                    <li><strong>Collections:</strong> Your starter avatar belongs to the <em>Genesis Collection</em>. Generated avatars belong to the <em>Forged Collection</em>.</li>
                                 </ul>
                             </div>
                         </details>
@@ -579,18 +579,44 @@ const WikiView: React.FC<WikiViewProps> = ({ onBack, onNavigate, user, onUpdateU
                     </table>
                 </div>
 
-                {/* Marketplace Mechanics */}
-                <div className="bg-purple-900/20 border border-purple-500/30 p-6 rounded-xl">
-                    <h3 className="font-retro text-purple-400 text-lg mb-2">Avatar Marketplace & XP Infusion</h3>
-                    <p className="text-sm text-gray-300 mb-3">
-                        Trade unique identities with other pilgrims.
-                    </p>
-                    <ul className="list-disc pl-5 space-y-2 text-sm text-gray-400">
-                        <li><strong>Selling Rules:</strong> You can list any avatar from your Vault, provided you own at least <strong>two</strong> avatars (you must always keep one default identity).</li>
-                        <li><strong>XP Infusion:</strong> Sellers can inject their own XP into an avatar to increase its value. This XP is deducted from the seller and transferred to the buyer upon purchase.</li>
-                        <li><strong>Buying:</strong> When you buy an avatar, you receive the item PLUS any infused XP attached to it.</li>
-                        <li><strong>Formula:</strong> New XP = Your XP - Price + <span className="text-yellow-500">Attached XP</span></li>
-                    </ul>
+                {/* Difficulty Modifiers */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="bg-green-900/20 border border-green-500/30 p-4 rounded text-center">
+                        <h4 className="text-green-400 font-bold uppercase mb-1">Easy Mode</h4>
+                        <div className="text-2xl font-mono text-white mb-1">0.8x</div>
+                        <p className="text-xs text-gray-400">Reduced XP for simpler guidance.</p>
+                    </div>
+                    <div className="bg-blue-900/20 border border-blue-500/30 p-4 rounded text-center">
+                        <h4 className="text-blue-400 font-bold uppercase mb-1">Normal Mode</h4>
+                        <div className="text-2xl font-mono text-white mb-1">1.0x</div>
+                        <p className="text-xs text-gray-400">Standard progression rate.</p>
+                    </div>
+                    <div className="bg-red-900/20 border border-red-500/30 p-4 rounded text-center">
+                        <h4 className="text-red-400 font-bold uppercase mb-1">Hard Mode</h4>
+                        <div className="text-2xl font-mono text-white mb-1">1.5x</div>
+                        <p className="text-xs text-gray-400">Bonus XP for strict theological challenges.</p>
+                    </div>
+                </div>
+
+                {/* Achievement List */}
+                <div>
+                    <h3 className="text-2xl font-retro text-white mb-4">Deeds of Faith</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {ACHIEVEMENTS.map(ach => (
+                            <div key={ach.id} className="flex items-center gap-4 bg-gray-800 p-3 rounded border border-gray-700">
+                                <div className="text-2xl bg-black w-10 h-10 flex items-center justify-center rounded-full border border-gray-600">
+                                    {ach.icon}
+                                </div>
+                                <div className="flex-1">
+                                    <div className="flex justify-between">
+                                        <h4 className="text-white font-bold text-sm">{ach.title}</h4>
+                                        <span className="text-green-400 font-mono text-xs">+{ach.xpReward} XP</span>
+                                    </div>
+                                    <p className="text-gray-400 text-xs">{ach.description}</p>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
                 </div>
 
                 {/* Spending */}
@@ -598,7 +624,7 @@ const WikiView: React.FC<WikiViewProps> = ({ onBack, onNavigate, user, onUpdateU
                     <h3 className="font-retro text-red-400 text-lg mb-2">Spending Spirit Points</h3>
                     <ul className="list-disc pl-5 space-y-2 text-sm text-gray-300">
                         <li>
-                            <span className="text-white font-bold">Avatar Studio:</span> Cost <span className="text-red-300">1000 XP</span> to generate a new AI identity.
+                            <span className="text-white font-bold">Avatar Studio:</span> Cost <span className="text-red-300">50 XP</span> to generate a new AI identity.
                         </li>
                         <li>
                             <span className="text-white font-bold">Custom Plans:</span> Cost <span className="text-red-300">50 XP</span> to forge a personalized reading schedule.
@@ -806,7 +832,7 @@ const WikiView: React.FC<WikiViewProps> = ({ onBack, onNavigate, user, onUpdateU
                          <h3 className="text-xl font-bold text-white font-serif">Scripture Scavenger Hunt</h3>
                       </div>
                       <p className="text-gray-400 text-sm mb-4 flex-grow">
-                        Find objects in your home that represent biblical truths. Great for families!
+                        Find objects in your home that represent biblical truths. Great for families and youth groups!
                       </p>
                    </div>
                 </div>

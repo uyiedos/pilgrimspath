@@ -24,46 +24,37 @@ interface ProfileViewProps {
   spendPoints?: (amount: number) => Promise<boolean>;
 }
 
-// Avatar Generation Tiers - UPDATED: Base 5000 XP to Unlock
+// Avatar Generation Tiers
 const AVATAR_TIERS = [
   { 
     id: 1, 
     name: "Novice Protocol", 
-    minXP: 5000, 
+    minXP: 10000, 
     styles: ['pixel art', '8bit', 'sketch', 'retro anime'],
-    classes: ['pilgrim', 'traveler', 'student'] 
+    classes: ['pilgrim', 'traveler', 'student'] // Fallback if no archetype
   },
   { 
     id: 2, 
     name: "Artisan Protocol", 
-    minXP: 15000, 
+    minXP: 25000, 
     styles: ['oil painting', 'watercolor', 'stained glass', 'mosaic'],
     classes: ['scribe', 'shepherd', 'monk', 'disciple']
   },
   { 
     id: 3, 
     name: "Ascended Protocol", 
-    minXP: 30000, 
+    minXP: 50000, 
     styles: ['cyberpunk', 'vaporwave', 'neon', 'futuristic', 'holographic'],
     classes: ['warrior', 'knight', 'paladin', 'prophet']
   },
   { 
     id: 4, 
     name: "Divine Protocol", 
-    minXP: 60000, 
+    minXP: 100000, 
     styles: ['ethereal', 'celestial', 'glowing gold', 'divine light', 'renaissance masterpiece'],
     classes: ['angel', 'seraph', 'king', 'queen', 'saint']
   }
 ];
-
-interface ArchiveImage {
-    id: string; // Database UUID
-    name: string;
-    url: string;
-    type: 'Avatar' | 'Plan';
-    createdAt: string;
-    collection?: string;
-}
 
 interface ActivityItem {
     id: string;
@@ -89,7 +80,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({
   onConvertGuestAction,
   spendPoints
 }) => {
-  const [activeTab, setActiveTab] = useState<'passport' | 'avatar' | 'vault' | 'referral' | 'archetype' | 'activity'>('passport');
+  const [activeTab, setActiveTab] = useState<'passport' | 'avatar' | 'registry' | 'referral' | 'archetype' | 'activity'>('passport');
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationMsg, setGenerationMsg] = useState('');
   const [showWarning, setShowWarning] = useState(false);
@@ -97,12 +88,19 @@ const ProfileView: React.FC<ProfileViewProps> = ({
   const [selectedArchetype, setSelectedArchetype] = useState<string>(user?.archetype || 'Knight');
   const [showConversionModal, setShowConversionModal] = useState(false);
   
-  // Vault & Selling
-  const [archiveImages, setArchiveImages] = useState<ArchiveImage[]>([]);
-  const [loadingArchive, setLoadingArchive] = useState(false);
-  const [sellModalItem, setSellModalItem] = useState<ArchiveImage | null>(null);
-  const [sellPrice, setSellPrice] = useState(100);
-  const [sellInfuseXP, setSellInfuseXP] = useState(0);
+  // Registry State
+  const [registryData, setRegistryData] = useState({
+    users: 0,
+    verses: 0,
+    achievements: 0,
+    loaded: false
+  });
+  
+  const [charts, setCharts] = useState({
+      rankDist: [] as ChartDataPoint[],
+      activityTrend: [] as ChartDataPoint[],
+      activityType: [] as ChartDataPoint[]
+  });
 
   const [personalFeed, setPersonalFeed] = useState<ActivityItem[]>([]);
 
@@ -112,146 +110,106 @@ const ProfileView: React.FC<ProfileViewProps> = ({
 
   const isGuest = user?.id.startsWith('offline-');
 
-  // Load Vault for Selling
   useEffect(() => {
-      if (activeTab === 'vault' && user) {
-          if (isGuest) {
-              // Guest Mode: Just show current avatar
-              setArchiveImages([{
-                  id: 'guest-avatar',
-                  name: 'Current Identity',
-                  url: user.avatar,
-                  type: 'Avatar',
-                  createdAt: new Date().toISOString(),
-                  collection: 'Guest'
-              }]);
-          } else {
-              fetchArchive();
-          }
-      }
-  }, [activeTab, user, isGuest]);
-
-  const fetchArchive = async () => {
-    if (!user) return;
-    setLoadingArchive(true);
-    const images: ArchiveImage[] = [];
-    
-    try {
-        const { data: history } = await supabase
-            .from('avatar_history')
-            .select('*')
-            .eq('user_id', user.id)
-            .order('created_at', { ascending: false });
-
-        if (history && history.length > 0) {
-            history.forEach((h: any) => {
-                images.push({ 
-                    id: h.id,
-                    name: h.style_prompt || 'Avatar', 
-                    url: h.avatar_url, 
-                    type: 'Avatar',
-                    createdAt: h.created_at,
-                    collection: h.collection_name
-                });
+    if (activeTab === 'registry' && !registryData.loaded) {
+        if (isGuest) {
+            // Mock data for guests to view without crashing
+            setRegistryData({
+                users: 1240,
+                verses: 5400,
+                achievements: 3200,
+                loaded: true
             });
-        } else {
-            // FALLBACK: If DB is empty (old user), show current avatar as Genesis
-            // This ensures "Vault should show already owned avatar even default"
-            images.push({
-                id: 'genesis-fallback',
-                name: 'Genesis Pilgrim',
-                url: user.avatar,
-                type: 'Avatar',
-                createdAt: user.joinedDate,
-                collection: 'Genesis'
-            });
+            return;
         }
-    } catch (e) {
-        console.error("Error fetching archive:", e);
+
+        const fetchRegistryData = async () => {
+            try {
+                // 1. Basic Counts
+                const [userReq, verseReq, achReq] = await Promise.all([
+                    supabase.from('users').select('*', { count: 'exact', head: true }),
+                    supabase.from('collected_verses').select('*', { count: 'exact', head: true }),
+                    supabase.from('unlocked_achievements').select('*', { count: 'exact', head: true })
+                ]);
+                
+                // 2. Fetch Analytical Data
+                const { data: userData } = await supabase.from('users').select('total_points').limit(500);
+                const buckets = { 'Seeker': 0, 'Disciple': 0, 'Guardian': 0, 'Mystic': 0, 'Saint': 0 };
+                
+                if (userData) {
+                    userData.forEach(u => {
+                        const xp = u.total_points || 0;
+                        if (xp < 2000) buckets['Seeker']++;
+                        else if (xp < 6800) buckets['Disciple']++;
+                        else if (xp < 16000) buckets['Guardian']++;
+                        else if (xp < 36000) buckets['Mystic']++;
+                        else buckets['Saint']++;
+                    });
+                }
+
+                // 3. Activity Trend
+                const { data: activityData } = await supabase
+                  .from('activity_feed')
+                  .select('activity_type, created_at')
+                  .order('created_at', { ascending: false })
+                  .limit(200);
+
+                const trendMap: Record<string, number> = {};
+                const typeMap: Record<string, number> = { 'levelup': 0, 'achievement': 0, 'badge': 0, 'join': 0, 'broadcast': 0 };
+                
+                if (activityData) {
+                    activityData.forEach(act => {
+                        const date = new Date(act.created_at).toLocaleDateString(undefined, { weekday: 'short' });
+                        trendMap[date] = (trendMap[date] || 0) + 1;
+                        const t = act.activity_type || 'other';
+                        typeMap[t] = (typeMap[t] || 0) + 1;
+                    });
+                }
+                
+                setRegistryData({
+                    users: userReq.count || 0,
+                    verses: verseReq.count || 0,
+                    achievements: achReq.count || 0,
+                    loaded: true
+                });
+
+                setCharts({
+                    rankDist: [
+                        { label: 'Seeker', value: buckets['Seeker'], color: '#9ca3af' },
+                        { label: 'Disciple', value: buckets['Disciple'], color: '#60a5fa' },
+                        { label: 'Guardian', value: buckets['Guardian'], color: '#a855f7' },
+                        { label: 'Mystic', value: buckets['Mystic'], color: '#eab308' },
+                        { label: 'Saint', value: buckets['Saint'], color: '#ef4444' },
+                    ],
+                    activityTrend: Object.keys(trendMap).reverse().slice(0,7).map(d => ({ label: d, value: trendMap[d] })),
+                    activityType: [
+                        { label: 'Level Up', value: typeMap['levelup'], color: '#fbbf24' },
+                        { label: 'Badge', value: typeMap['badge'], color: '#8b5cf6' },
+                        { label: 'Achieve', value: typeMap['achievement'], color: '#10b981' },
+                        { label: 'Join', value: typeMap['join'], color: '#3b82f6' },
+                        { label: 'Live', value: typeMap['broadcast'], color: '#ef4444' }
+                    ]
+                });
+
+            } catch (e) {
+                console.error("Error fetching registry data", e);
+            }
+        };
+        fetchRegistryData();
     }
-    setArchiveImages(images);
-    setLoadingArchive(false);
-  };
 
-  const handleEquip = (img: ArchiveImage) => {
-      if (!user || !onUpdateUser) return;
-      if (!confirm("Do you want to restore this avatar?")) return;
-      
-      onUpdateUser({ ...user, avatar: img.url });
-      alert("Avatar equipped!");
-  };
-
-  const handleSellList = async () => {
-      if (!sellModalItem || !user) return;
-      
-      // Rule: Genesis Fallback check (existing)
-      if (sellModalItem.id === 'genesis-fallback') return alert("This Genesis avatar hasn't been synced to the chain yet. Please generate a new one first.");
-      
-      // Rule: Minimum Price
-      if (sellPrice < 10) return alert("Minimum price is 10 XP");
-      
-      // Rule: XP Balance
-      if (sellInfuseXP < 0) return alert("Cannot infuse negative XP");
-      if (sellInfuseXP > totalPoints) return alert(`Not enough XP to infuse. You have ${totalPoints} XP.`);
-
-      // Rule: Ownership Count
-      const myAvatars = archiveImages.filter(img => img.type === 'Avatar');
-      
-      if (myAvatars.length <= 1) {
-          alert("You cannot sell your only avatar. You must maintain at least one identity in your Vault.");
-          return;
-      }
-
-      // Rule: Equipped Avatar
-      let isEquipped = sellModalItem.url === user.avatar;
-      
-      if (isEquipped) {
-          const fallback = myAvatars.find(img => img.id !== sellModalItem.id && img.id !== 'genesis-fallback');
-          
-          if (!fallback) {
-             alert("You need another valid avatar to switch to before selling this one.");
-             return;
-          }
-
-          const confirmSwitch = confirm(
-              `You are about to sell your CURRENTLY EQUIPPED avatar.\n\n` +
-              `To proceed, we must switch your identity to: ${fallback.name}.\n\n` +
-              `Do you accept this change?`
-          );
-
-          if (!confirmSwitch) return;
-
-          // Switch Avatar Locally & DB
-          onUpdateUser({ ...user, avatar: fallback.url });
-          // Update DB without awaiting full promise chain to allow UI to proceed, but good to handle error if any
-          supabase.from('users').update({ avatar: fallback.url }).eq('id', user.id).then(({ error }) => {
-              if (error) console.error("Auto-switch failed", error);
-          });
-      } else {
-          if (!confirm(`Are you sure? You will spend ${sellInfuseXP} XP to power up this avatar listing.`)) return;
-      }
-
-      try {
-          const { error } = await supabase.rpc('list_avatar', {
-              p_avatar_id: sellModalItem.id,
-              p_seller_id: user.id,
-              p_price: sellPrice,
-              p_attached_xp: sellInfuseXP
-          });
-
-          if (error) throw error;
-
-          // Locally deduct points
-          if (spendPoints) {
-              window.location.reload(); // Simplest way to sync points for now
-          }
-
-          alert(`Listed for ${sellPrice} XP with ${sellInfuseXP} XP Power!`);
-          setSellModalItem(null);
-      } catch (e: any) {
-          alert("Error listing item: " + e.message);
-      }
-  };
+    if (activeTab === 'activity' && user && !isGuest) {
+        const fetchPersonalActivity = async () => {
+            const { data } = await supabase
+                .from('activity_feed')
+                .select('*')
+                .eq('user_id', user.id)
+                .order('created_at', { ascending: false });
+            if (data) setPersonalFeed(data);
+        };
+        fetchPersonalActivity();
+    }
+  }, [activeTab, registryData.loaded, isGuest, user]);
 
   // Set default tier to highest unlocked
   useEffect(() => {
@@ -298,9 +256,9 @@ const ProfileView: React.FC<ProfileViewProps> = ({
   const generateNewAvatar = async () => {
     if (!isAvatarStudioUnlocked || isGuest) return;
     
-    // Check Cost - 1000 XP
+    // Check Cost - 50 XP
     if (spendPoints) {
-        const success = await spendPoints(1000);
+        const success = await spendPoints(50);
         if (!success) {
             setShowWarning(false);
             return;
@@ -391,7 +349,6 @@ const ProfileView: React.FC<ProfileViewProps> = ({
           case 'broadcast': return `Went live on Journey TV`;
           default: return 'Made progress';
       }
-      return '';
   };
 
   return (
@@ -408,70 +365,6 @@ const ProfileView: React.FC<ProfileViewProps> = ({
           />
       )}
 
-      {/* SELL MODAL */}
-      {sellModalItem && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-4 animate-fade-in backdrop-blur">
-              <div className="bg-gray-900 border-4 border-green-600 rounded-xl p-6 max-w-sm w-full shadow-2xl relative">
-                  <button onClick={() => setSellModalItem(null)} className="absolute top-2 right-2 text-gray-500 hover:text-white">✕</button>
-                  <h3 className="text-xl font-retro text-green-400 mb-4">List Avatar for Sale</h3>
-                  <div className="flex justify-center mb-4">
-                      <img src={sellModalItem.url} className="w-32 h-32 rounded border border-gray-600" />
-                  </div>
-                  
-                  {sellModalItem.url === user.avatar && (
-                      <div className="bg-yellow-900/30 border border-yellow-500 text-yellow-200 text-xs p-2 rounded mb-4 text-center">
-                          ⚠️ This is your active avatar. It will be replaced automatically if you list it.
-                      </div>
-                  )}
-
-                  <div className="space-y-4">
-                      <div>
-                          <label className="block text-gray-400 text-xs uppercase mb-1">Asking Price (XP)</label>
-                          <input 
-                            type="number" 
-                            value={sellPrice} 
-                            onChange={(e) => setSellPrice(parseInt(e.target.value))}
-                            className="w-full bg-black border border-gray-600 p-2 text-white font-mono"
-                            min={10}
-                          />
-                      </div>
-                      
-                      <div>
-                          <label className="block text-yellow-500 text-xs uppercase mb-1 flex justify-between">
-                              <span>Infuse XP (Power Up)</span>
-                              <span>Available: {totalPoints}</span>
-                          </label>
-                          <input 
-                            type="number" 
-                            value={sellInfuseXP} 
-                            onChange={(e) => setSellInfuseXP(parseInt(e.target.value))}
-                            className="w-full bg-yellow-900/20 border border-yellow-600 p-2 text-yellow-400 font-mono"
-                            min={0}
-                            max={totalPoints}
-                          />
-                          <p className="text-[9px] text-gray-400 mt-1">
-                              This XP will be <strong className="text-red-400">deducted from your balance</strong> and attached to the avatar. The buyer will receive it. High power avatars sell faster.
-                          </p>
-                      </div>
-
-                      <div className="bg-black/30 p-2 rounded text-[10px] text-gray-400">
-                          <div className="flex justify-between">
-                              <span>Listing Fee (Treasury):</span>
-                              <span>30% of Sale Price</span>
-                          </div>
-                          <div className="flex justify-between mt-1 text-green-400 font-bold">
-                              <span>Est. Profit:</span>
-                              <span>{Math.floor(sellPrice * 0.7)} XP</span>
-                          </div>
-                      </div>
-                  </div>
-                  <Button onClick={handleSellList} className="w-full mt-4 bg-green-700 hover:bg-green-600 border-green-900">
-                      Confirm Listing
-                  </Button>
-              </div>
-          </div>
-      )}
-
       {showWarning && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-4 animate-fade-in">
             <div className="bg-red-900/20 border-4 border-red-600 rounded-xl p-6 max-w-md w-full text-center shadow-[0_0_50px_rgba(220,38,38,0.5)]">
@@ -482,7 +375,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({
                     <br/><br/>
                     The new avatar will be automatically saved to your <strong className="text-white">Personal Vault</strong> as part of the <strong className="text-purple-400">Forged Collection</strong>.
                     <br/><br/>
-                    Cost: <strong className="text-yellow-500">1000 XP</strong>. Proceed with generation?
+                    Cost: <strong className="text-yellow-500">50 XP</strong>. Proceed with generation?
                 </p>
                 <div className="flex gap-4 justify-center">
                     <Button onClick={() => setShowWarning(false)} variant="secondary">Cancel</Button>
@@ -525,19 +418,39 @@ const ProfileView: React.FC<ProfileViewProps> = ({
              <Button onClick={() => setActiveTab('activity')} variant={activeTab === 'activity' ? 'primary' : 'secondary'} className="text-xs">{t('activity')}</Button>
              <Button onClick={() => setActiveTab('archetype')} variant={activeTab === 'archetype' ? 'primary' : 'secondary'} className="text-xs">Class</Button>
              <Button onClick={() => setActiveTab('avatar')} variant={activeTab === 'avatar' ? 'primary' : 'secondary'} className="text-xs">{t('avatar_studio')}</Button>
-             <Button onClick={() => setActiveTab('vault')} variant={activeTab === 'vault' ? 'primary' : 'secondary'} className="text-xs">Vault</Button>
              <Button onClick={() => setActiveTab('referral')} variant={activeTab === 'referral' ? 'primary' : 'secondary'} className="text-xs">Invite</Button>
+             <Button onClick={() => setActiveTab('registry')} variant={activeTab === 'registry' ? 'primary' : 'secondary'} className="text-xs">{t('global_registry')}</Button>
              <Button onClick={onBack} variant="secondary" className="text-xs ml-2">❌</Button>
            </div>
         </div>
 
+        {/* GUEST WARNING / CONVERSION CTA */}
+        {isGuest && (
+            <div className="mb-6 bg-red-900/30 border border-red-500 p-4 rounded-xl flex flex-col md:flex-row items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                    <div className="text-3xl">💾</div>
+                    <div>
+                        <h3 className="text-red-400 font-bold text-sm">Playing as Guest (Unsaved)</h3>
+                        <p className="text-gray-400 text-xs">Your progress is locally saved. Create an account to prevent data loss.</p>
+                    </div>
+                </div>
+                {onConvertGuestAction && (
+                    <Button onClick={() => setShowConversionModal(true)} className="bg-green-600 hover:bg-green-500 text-xs whitespace-nowrap">
+                        Save Progress / Create Account
+                    </Button>
+                )}
+            </div>
+        )}
+
         {/* Content Area */}
         <div className="bg-gray-900/80 border-2 border-gray-600 rounded-xl p-6 min-h-[500px] pixel-shadow relative overflow-hidden flex flex-col">
+          
           <div className="flex-1">
-            
             {/* TAB: PASSPORT */}
             {activeTab === 'passport' && (
                <div className="space-y-8 animate-fade-in">
+                  
+                  {/* Top Stats Section */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-8">
                      <div className="bg-black/40 p-4 rounded border border-gray-700">
                         <h3 className="text-yellow-500 font-retro text-sm uppercase mb-4 border-b border-gray-700 pb-2">Spiritual Metrics</h3>
@@ -645,6 +558,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({
                         })}
                      </div>
                   </div>
+
                </div>
             )}
 
@@ -744,7 +658,7 @@ const ProfileView: React.FC<ProfileViewProps> = ({
                      <h2 className="text-3xl font-retro text-yellow-400 mb-2">Avatar Studio</h2>
                      <p className="text-gray-400 font-serif mb-8 text-sm">
                         Use your accumulated XP to forge a new unique identity. 
-                        Generated avatars are added to your <strong>Forged Collection</strong> in your Vault.
+                        Generated avatars are added to your <strong>Forged Collection</strong>.
                      </p>
 
                      {isGuest && (
@@ -794,12 +708,12 @@ const ProfileView: React.FC<ProfileViewProps> = ({
                            disabled={isGenerating || !isAvatarStudioUnlocked}
                            className={`w-full max-w-xs text-lg py-4 relative z-20 ${!isAvatarStudioUnlocked ? 'bg-gray-700 border-gray-600 text-gray-400' : 'bg-blue-600 hover:bg-blue-500'}`}
                         >
-                           {isGenerating ? 'Forging...' : 'Generate New Identity (-1000 XP)'}
+                           {isGenerating ? 'Forging...' : 'Generate New Identity (-50 XP)'}
                         </Button>
                         
                         {!isAvatarStudioUnlocked && (
                            <p className="text-red-400 text-xs mt-3 font-mono">
-                              Unlock at: {AVATAR_TIERS[0].minXP.toLocaleString()} XP
+                              Required: {AVATAR_TIERS[0].minXP.toLocaleString()} XP
                            </p>
                         )}
                         
@@ -811,76 +725,83 @@ const ProfileView: React.FC<ProfileViewProps> = ({
                </div>
             )}
 
-            {/* TAB: VAULT */}
-            {activeTab === 'vault' && (
-               <div className="animate-fade-in flex flex-col h-full">
-                  <div className="flex justify-between items-center mb-6">
-                      <h2 className="text-2xl font-retro text-white">Personal Vault</h2>
-                      <p className="text-xs text-gray-400">Total Assets: {archiveImages.length}</p>
-                  </div>
+            {/* TAB: GLOBAL REGISTRY */}
+            {activeTab === 'registry' && (
+                <div className="animate-fade-in space-y-8">
+                    <div className="text-center">
+                        <h2 className="text-3xl font-retro text-white mb-2">Global Soul Registry</h2>
+                        <p className="text-gray-400 text-sm font-serif">Live statistics from the Journey Network.</p>
+                    </div>
 
-                  {isGuest ? (
-                      <div className="text-center py-20 text-gray-500">
-                          Vault access requires an account.
-                      </div>
-                  ) : loadingArchive ? (
-                      <div className="text-center py-20 text-yellow-500 font-mono">Loading assets...</div>
-                  ) : archiveImages.length === 0 ? (
-                      <div className="text-center py-20 border-4 border-dashed border-gray-700 rounded-xl text-gray-500">
-                          Vault is empty. Generate an avatar to start collecting.
-                      </div>
-                  ) : (
-                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 overflow-y-auto custom-scroll pr-2 max-h-[500px]">
-                          {archiveImages.map(img => {
-                              const isEquipped = img.url === user.avatar;
-                              
-                              return (
-                              <div key={img.id} className={`bg-black p-2 rounded border transition-colors group relative ${isEquipped ? 'border-yellow-500' : 'border-gray-700 hover:border-blue-500'}`}>
-                                  <div className="aspect-square overflow-hidden rounded bg-gray-900 mb-2 relative">
-                                      <img src={img.url} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
-                                      {isEquipped && (
-                                          <div className="absolute inset-0 bg-yellow-500/20 flex items-center justify-center">
-                                              <span className="bg-black/80 text-yellow-500 text-[9px] px-2 py-1 rounded border border-yellow-500">EQUIPPED</span>
-                                          </div>
-                                      )}
-                                  </div>
-                                  <div className="flex justify-between items-center mb-1">
-                                      <span className="text-[10px] font-mono text-gray-400 truncate w-20">
-                                          {new Date(img.createdAt).toLocaleDateString()}
-                                      </span>
-                                      <span className={`text-[9px] px-1.5 rounded font-bold uppercase ${img.type === 'Avatar' ? 'bg-blue-900 text-blue-200' : 'bg-green-900 text-green-200'}`}>
-                                          {img.type}
-                                      </span>
-                                  </div>
-                                  
-                                  {img.type === 'Avatar' && !isEquipped && onUpdateUser && (
-                                      <button 
-                                          onClick={() => handleEquip(img)}
-                                          className="w-full mt-1 bg-gray-800 hover:bg-blue-700 text-white text-[9px] py-1 rounded uppercase font-bold transition-colors"
-                                      >
-                                          Equip
-                                      </button>
-                                  )}
+                    {/* KPI Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="bg-gray-800 p-6 rounded-lg text-center border-t-4 border-blue-500 shadow-lg">
+                            <div className="text-4xl font-mono text-white mb-1">{registryData.users.toLocaleString()}</div>
+                            <div className="text-xs text-blue-400 uppercase tracking-widest">Active Pilgrims</div>
+                        </div>
+                        <div className="bg-gray-800 p-6 rounded-lg text-center border-t-4 border-green-500 shadow-lg">
+                            <div className="text-4xl font-mono text-white mb-1">{registryData.verses.toLocaleString()}</div>
+                            <div className="text-xs text-green-400 uppercase tracking-widest">Verses Discovered</div>
+                        </div>
+                        <div className="bg-gray-800 p-6 rounded-lg text-center border-t-4 border-yellow-500 shadow-lg">
+                            <div className="text-4xl font-mono text-white mb-1">{registryData.achievements.toLocaleString()}</div>
+                            <div className="text-xs text-yellow-400 uppercase tracking-widest">Deeds Completed</div>
+                        </div>
+                    </div>
 
-                                  <div className="mt-2 flex gap-1">
-                                      <button 
-                                        onClick={() => setSellModalItem(img)}
-                                        className="flex-1 bg-green-900/50 hover:bg-green-700 text-green-300 text-[10px] py-1 rounded border border-green-800"
-                                      >
-                                          Sell
-                                      </button>
-                                  </div>
+                    {/* Charts */}
+                    {registryData.loaded && !isGuest && (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            
+                            {/* Rank Distribution */}
+                            <div className="bg-gray-900/50 p-4 rounded border border-gray-700">
+                                <h3 className="text-xs font-bold text-gray-400 uppercase mb-4 flex items-center gap-2">
+                                    <span>📊</span> Rank Distribution
+                                </h3>
+                                <div className="h-48 w-full">
+                                    <BarChart data={charts.rankDist} />
+                                </div>
+                            </div>
 
-                                  <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                                      <div className="bg-black/50 text-white p-1 rounded pointer-events-auto">
-                                          <a href={img.url} target="_blank" rel="noopener noreferrer">↗️</a>
-                                      </div>
-                                  </div>
-                              </div>
-                          )})}
-                      </div>
-                  )}
-               </div>
+                            {/* Activity Trends */}
+                            <div className="bg-gray-900/50 p-4 rounded border border-gray-700">
+                                <h3 className="text-xs font-bold text-gray-400 uppercase mb-4 flex items-center gap-2">
+                                    <span>📈</span> Activity Trends (7 Days)
+                                </h3>
+                                <div className="h-48 w-full">
+                                    <LineChart data={charts.activityTrend} color="#3b82f6" />
+                                </div>
+                            </div>
+
+                            {/* Event Breakdown */}
+                            <div className="bg-gray-900/50 p-4 rounded border border-gray-700 lg:col-span-2 flex flex-col md:flex-row gap-8 items-center">
+                                <div className="w-full md:w-1/3 h-48">
+                                    <h3 className="text-xs font-bold text-gray-400 uppercase mb-4 text-center">Event Breakdown</h3>
+                                    <DonutChart data={charts.activityType} />
+                                </div>
+                                <div className="flex-1 space-y-3 w-full">
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {charts.activityType.map((d, i) => (
+                                            <div key={i} className="flex justify-between items-center bg-black/40 p-2 rounded border border-gray-800">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: d.color }}></span>
+                                                    <span className="text-gray-400 text-xs">{d.label}</span>
+                                                </div>
+                                                <span className="text-white text-xs font-mono">{d.value}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {isGuest && (
+                        <div className="text-center text-xs text-gray-500 italic mt-8">
+                            Note: Connect to network (Login) to see real-time charts.
+                        </div>
+                    )}
+                </div>
             )}
 
           </div>

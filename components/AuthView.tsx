@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import Button from './Button';
 import { User } from '../types';
@@ -291,7 +290,7 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
               </div>
               <span className="hidden md:inline text-gray-700">|</span>
               <div className="flex items-center gap-1 text-green-300 hover:text-green-200 transition-colors">
-                 <span>🛒</span> Marketplace Live
+                 <span>🪙</span> Play to Earn (Soon)
               </div>
               <span className="hidden md:inline text-gray-700">|</span>
               <div className="flex items-center gap-1 text-purple-300 hover:text-purple-200 transition-colors">
@@ -505,10 +504,10 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
 
                {/* Feature 6 - NFT Gallery */}
                <div className="bg-gray-800 p-6 rounded-xl border border-gray-700 hover:border-purple-500 transition-colors group">
-                  <div className="text-4xl mb-4 group-hover:scale-110 transition-transform">🛒</div>
-                  <h3 className="text-xl font-bold text-white mb-2">Avatar Marketplace</h3>
+                  <div className="text-4xl mb-4 group-hover:scale-110 transition-transform">💠</div>
+                  <h3 className="text-xl font-bold text-white mb-2">NFT Gallery</h3>
                   <p className="text-gray-400 text-sm leading-relaxed">
-                     Buy and trade unique spiritual identities. <strong>XP Infusion</strong> allows sellers to invest power into avatars, transferring rank to buyers.
+                     Forge unique, AI-generated avatars and collect them in your personal vault. Trade and showcase your digital identity.
                   </p>
                </div>
             </div>
@@ -592,7 +591,7 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
                      <span className="text-green-400 font-bold text-xs block mb-1">New Features</span>
                      <ul className="list-disc pl-4 text-xs text-gray-400">
                          <li>Avatar Studio: Forge unique NFT Identities</li>
-                         <li>Marketplace: Trade avatars & inherit XP power</li>
+                         <li>NFT Gallery: View Genesis & Forged Collections</li>
                          <li>Spiritual Disciplines (Activities) Renamed</li>
                      </ul>
                  </div>
