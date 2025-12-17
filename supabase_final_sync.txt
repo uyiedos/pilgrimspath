@@ -1,0 +1,271 @@
+
+-- =================================================================
+-- JOURNEY APP: FINAL SYNC (Community & Marketplace & XP)
+-- Run this script to ensure your database supports all recent features.
+-- =================================================================
+
+BEGIN;
+
+-- 1. ENABLE EXTENSIONS
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- =================================================================
+-- 2. COMMUNITY TABLES
+-- =================================================================
+
+-- Communities
+CREATE TABLE IF NOT EXISTS public.communities (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  name text NOT NULL,
+  description text,
+  type text NOT NULL,
+  image text,
+  leader_id uuid REFERENCES public.users(id) NOT NULL,
+  member_count int DEFAULT 1,
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- Community Members
+CREATE TABLE IF NOT EXISTS public.community_members (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  community_id uuid REFERENCES public.communities(id) ON DELETE CASCADE NOT NULL,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  role text DEFAULT 'member',
+  joined_at timestamp with time zone DEFAULT now(),
+  UNIQUE(community_id, user_id)
+);
+
+-- Community Posts
+CREATE TABLE IF NOT EXISTS public.community_posts (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  community_id uuid REFERENCES public.communities(id) ON DELETE CASCADE NOT NULL,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  content text NOT NULL,
+  type text DEFAULT 'general',
+  likes_count int DEFAULT 0,
+  comments_count int DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- Community Comments
+CREATE TABLE IF NOT EXISTS public.community_comments (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  post_id uuid REFERENCES public.community_posts(id) ON DELETE CASCADE NOT NULL,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  content text NOT NULL,
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- Community Post Likes
+CREATE TABLE IF NOT EXISTS public.community_post_likes (
+  post_id uuid REFERENCES public.community_posts(id) ON DELETE CASCADE NOT NULL,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  created_at timestamp with time zone DEFAULT now(),
+  PRIMARY KEY (post_id, user_id)
+);
+
+-- RLS POLICIES (Idempotent creation)
+DO $$ BEGIN
+    -- Communities
+    ALTER TABLE public.communities ENABLE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS "Public Read Communities" ON public.communities;
+    CREATE POLICY "Public Read Communities" ON public.communities FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Auth Insert Communities" ON public.communities;
+    CREATE POLICY "Auth Insert Communities" ON public.communities FOR INSERT TO authenticated WITH CHECK (auth.uid() = leader_id);
+
+    -- Members
+    ALTER TABLE public.community_members ENABLE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS "Public Read Members" ON public.community_members;
+    CREATE POLICY "Public Read Members" ON public.community_members FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "User Join Community" ON public.community_members;
+    CREATE POLICY "User Join Community" ON public.community_members FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+    DROP POLICY IF EXISTS "User Leave Community" ON public.community_members;
+    CREATE POLICY "User Leave Community" ON public.community_members FOR DELETE USING (auth.uid() = user_id);
+
+    -- Posts
+    ALTER TABLE public.community_posts ENABLE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS "Public Read Posts" ON public.community_posts;
+    CREATE POLICY "Public Read Posts" ON public.community_posts FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Auth Insert Posts" ON public.community_posts;
+    CREATE POLICY "Auth Insert Posts" ON public.community_posts FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+    -- Comments & Likes
+    ALTER TABLE public.community_comments ENABLE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS "Public Read Comments" ON public.community_comments;
+    CREATE POLICY "Public Read Comments" ON public.community_comments FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Auth Insert Comments" ON public.community_comments;
+    CREATE POLICY "Auth Insert Comments" ON public.community_comments FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+    
+    ALTER TABLE public.community_post_likes ENABLE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS "Public Read Likes" ON public.community_post_likes;
+    CREATE POLICY "Public Read Likes" ON public.community_post_likes FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Auth Insert Likes" ON public.community_post_likes;
+    CREATE POLICY "Auth Insert Likes" ON public.community_post_likes FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+END $$;
+
+-- =================================================================
+-- 3. MARKETPLACE TABLES
+-- =================================================================
+
+-- Avatar History Updates
+ALTER TABLE public.avatar_history ADD COLUMN IF NOT EXISTS collection_name text DEFAULT 'Genesis';
+
+-- Treasury
+CREATE TABLE IF NOT EXISTS public.treasury (
+    id int PRIMARY KEY DEFAULT 1,
+    balance bigint DEFAULT 0,
+    total_volume bigint DEFAULT 0,
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT single_row CHECK (id = 1)
+);
+INSERT INTO public.treasury (id, balance) VALUES (1, 0) ON CONFLICT DO NOTHING;
+ALTER TABLE public.treasury ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public Read Treasury" ON public.treasury;
+CREATE POLICY "Public Read Treasury" ON public.treasury FOR SELECT USING (true);
+
+-- Listings
+CREATE TABLE IF NOT EXISTS public.marketplace_listings (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    avatar_id uuid REFERENCES public.avatar_history(id) NOT NULL,
+    seller_id uuid REFERENCES public.users(id) NOT NULL,
+    price bigint NOT NULL CHECK (price >= 10),
+    attached_xp bigint DEFAULT 0,
+    status text DEFAULT 'active',
+    created_at timestamp with time zone DEFAULT now()
+);
+ALTER TABLE public.marketplace_listings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public Read Listings" ON public.marketplace_listings;
+CREATE POLICY "Public Read Listings" ON public.marketplace_listings FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Auth Insert Listings" ON public.marketplace_listings;
+CREATE POLICY "Auth Insert Listings" ON public.marketplace_listings FOR INSERT TO authenticated WITH CHECK (auth.uid() = seller_id);
+DROP POLICY IF EXISTS "Seller Update Listings" ON public.marketplace_listings;
+CREATE POLICY "Seller Update Listings" ON public.marketplace_listings FOR UPDATE TO authenticated USING (auth.uid() = seller_id);
+
+-- =================================================================
+-- 4. CRITICAL LOGIC FUNCTIONS (RPCs)
+-- =================================================================
+
+-- A. LIST AVATAR (Deducts XP from Seller)
+CREATE OR REPLACE FUNCTION list_avatar(p_avatar_id uuid, p_seller_id uuid, p_price bigint, p_attached_xp bigint)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_current_xp bigint;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.avatar_history WHERE id = p_avatar_id AND user_id = p_seller_id) THEN
+        RAISE EXCEPTION 'You do not own this avatar';
+    END IF;
+
+    SELECT total_points INTO v_current_xp FROM public.users WHERE id = p_seller_id;
+    IF v_current_xp < p_attached_xp THEN
+        RAISE EXCEPTION 'Insufficient XP to infuse';
+    END IF;
+
+    UPDATE public.users SET total_points = total_points - p_attached_xp WHERE id = p_seller_id;
+
+    INSERT INTO public.marketplace_listings (avatar_id, seller_id, price, attached_xp, status)
+    VALUES (p_avatar_id, p_seller_id, p_price, p_attached_xp, 'active');
+
+    RETURN true;
+END;
+$$;
+
+-- B. BUY AVATAR (Transfers Ownership + XP)
+CREATE OR REPLACE FUNCTION buy_avatar(p_listing_id uuid, p_buyer_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_seller_id uuid;
+    v_avatar_id uuid;
+    v_price bigint;
+    v_attached_xp bigint;
+    v_buyer_balance bigint;
+    v_fee bigint;
+    v_seller_share bigint;
+BEGIN
+    SELECT seller_id, avatar_id, price, attached_xp 
+    INTO v_seller_id, v_avatar_id, v_price, v_attached_xp
+    FROM public.marketplace_listings
+    WHERE id = p_listing_id AND status = 'active'
+    FOR UPDATE;
+
+    IF NOT FOUND THEN RAISE EXCEPTION 'Listing not found or active'; END IF;
+    IF v_seller_id = p_buyer_id THEN RAISE EXCEPTION 'Cannot buy your own avatar'; END IF;
+
+    SELECT total_points INTO v_buyer_balance FROM public.users WHERE id = p_buyer_id;
+    IF v_buyer_balance < v_price THEN RAISE EXCEPTION 'Insufficient funds'; END IF;
+
+    v_fee := floor(v_price * 0.30);
+    v_seller_share := v_price - v_fee;
+
+    -- Update Buyer (Pay Price, Gain Infused XP)
+    UPDATE public.users SET total_points = total_points - v_price + v_attached_xp WHERE id = p_buyer_id;
+    
+    -- Update Seller (Gain Share)
+    UPDATE public.users SET total_points = total_points + v_seller_share WHERE id = v_seller_id;
+    
+    -- Update Treasury
+    UPDATE public.treasury SET balance = balance + v_fee, total_volume = total_volume + v_price WHERE id = 1;
+
+    -- Transfer Avatar
+    UPDATE public.avatar_history SET user_id = p_buyer_id WHERE id = v_avatar_id;
+    UPDATE public.marketplace_listings SET status = 'sold' WHERE id = p_listing_id;
+
+    -- Log
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (p_buyer_id, 'achievement', jsonb_build_object('title', 'Market Purchase', 'icon', '🛒', 'xp_gained', v_attached_xp));
+
+    RETURN true;
+END;
+$$;
+
+-- C. SPEND POINTS (Generic)
+CREATE OR REPLACE FUNCTION spend_points(p_user_id uuid, p_amount int)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  current_points int;
+BEGIN
+  SELECT total_points INTO current_points FROM public.users WHERE id = p_user_id;
+  IF current_points < p_amount THEN RETURN false; END IF;
+  UPDATE public.users SET total_points = total_points - p_amount WHERE id = p_user_id;
+  RETURN true;
+END;
+$$;
+
+-- D. STATS
+CREATE OR REPLACE FUNCTION get_marketplace_stats()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_volume bigint;
+    v_active_count int;
+    v_unique_holders int;
+BEGIN
+    SELECT total_volume INTO v_volume FROM public.treasury WHERE id = 1;
+    SELECT count(*) INTO v_active_count FROM public.marketplace_listings WHERE status = 'active';
+    SELECT count(DISTINCT user_id) INTO v_unique_holders FROM public.avatar_history;
+    RETURN jsonb_build_object('volume', COALESCE(v_volume, 0), 'count', v_active_count, 'holders', v_unique_holders);
+END;
+$$;
+
+-- E. POST LIKES
+CREATE OR REPLACE FUNCTION increment_post_likes(post_row_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE public.community_posts SET likes_count = likes_count + 1 WHERE id = post_row_id;
+END;
+$$;
+
+COMMIT;

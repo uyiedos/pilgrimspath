@@ -1,0 +1,7 @@
+
+-- Run this in your Supabase SQL Editor to support detailed broadcasts
+
+-- Add description and source_reference to videos
+alter table public.videos 
+add column if not exists description text,
+add column if not exists source_reference text;

@@ -1,0 +1,114 @@
+
+-- ==========================================
+-- MARKETPLACE & TREASURY SETUP
+-- ==========================================
+
+-- 1. Treasury Table (Singleton Row)
+CREATE TABLE IF NOT EXISTS public.treasury (
+    id int PRIMARY KEY DEFAULT 1,
+    balance bigint DEFAULT 0,
+    total_volume bigint DEFAULT 0,
+    updated_at timestamp with time zone default now(),
+    CONSTRAINT single_row CHECK (id = 1)
+);
+INSERT INTO public.treasury (id, balance) VALUES (1, 0) ON CONFLICT DO NOTHING;
+
+-- Enable Read Access to Treasury
+ALTER TABLE public.treasury ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Public Read Treasury" ON public.treasury FOR SELECT USING (true);
+
+-- 2. Marketplace Listings
+CREATE TABLE IF NOT EXISTS public.marketplace_listings (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    avatar_id uuid REFERENCES public.avatar_history(id) NOT NULL,
+    seller_id uuid REFERENCES public.users(id) NOT NULL,
+    price bigint NOT NULL CHECK (price >= 10),
+    status text DEFAULT 'active', -- active, sold, cancelled
+    created_at timestamp with time zone default now()
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS marketplace_status_idx ON public.marketplace_listings (status);
+CREATE INDEX IF NOT EXISTS marketplace_created_at_idx ON public.marketplace_listings (created_at DESC);
+
+-- RLS
+ALTER TABLE public.marketplace_listings ENABLE ROW LEVEL SECURITY;
+
+-- Read: Everyone
+CREATE POLICY "Public Read Listings" ON public.marketplace_listings FOR SELECT USING (true);
+
+-- Insert: Authenticated Seller
+CREATE POLICY "Auth Insert Listings" ON public.marketplace_listings FOR INSERT TO authenticated 
+WITH CHECK (auth.uid() = seller_id);
+
+-- Update: Seller (Cancel) or System (Sold via RPC)
+CREATE POLICY "Seller Update Listings" ON public.marketplace_listings FOR UPDATE TO authenticated 
+USING (auth.uid() = seller_id);
+
+-- 3. Atomic Buy Function
+CREATE OR REPLACE FUNCTION buy_avatar(p_listing_id uuid, p_buyer_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_seller_id uuid;
+    v_avatar_id uuid;
+    v_price bigint;
+    v_buyer_balance bigint;
+    v_fee bigint;
+    v_seller_share bigint;
+    v_avatar_url text;
+BEGIN
+    -- Get listing details
+    SELECT seller_id, avatar_id, price 
+    INTO v_seller_id, v_avatar_id, v_price
+    FROM public.marketplace_listings
+    WHERE id = p_listing_id AND status = 'active'
+    FOR UPDATE; -- Lock row
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Listing not found or no longer active';
+    END IF;
+
+    IF v_seller_id = p_buyer_id THEN
+        RAISE EXCEPTION 'Cannot buy your own avatar';
+    END IF;
+
+    -- Check buyer balance
+    SELECT total_points INTO v_buyer_balance
+    FROM public.users
+    WHERE id = p_buyer_id;
+
+    IF v_buyer_balance < v_price THEN
+        RAISE EXCEPTION 'Insufficient funds';
+    END IF;
+
+    -- Calculate splits
+    v_fee := floor(v_price * 0.30);
+    v_seller_share := v_price - v_fee;
+
+    -- Update Balances
+    -- Deduct from Buyer
+    UPDATE public.users SET total_points = total_points - v_price WHERE id = p_buyer_id;
+    -- Add to Seller
+    UPDATE public.users SET total_points = total_points + v_seller_share WHERE id = v_seller_id;
+    -- Add to Treasury
+    UPDATE public.treasury SET balance = balance + v_fee, total_volume = total_volume + v_price WHERE id = 1;
+
+    -- Get Avatar URL
+    SELECT avatar_url INTO v_avatar_url FROM public.avatar_history WHERE id = v_avatar_id;
+
+    -- Transfer Ownership in History
+    UPDATE public.avatar_history SET user_id = p_buyer_id WHERE id = v_avatar_id;
+    
+    -- Close Listing
+    UPDATE public.marketplace_listings SET status = 'sold' WHERE id = p_listing_id;
+
+    -- Log Activity
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (p_buyer_id, 'achievement', jsonb_build_object('title', 'Market Patron', 'icon', '🛒', 'reward', 0));
+
+    RETURN true;
+END;
+$$;
