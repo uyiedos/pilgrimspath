@@ -1154,14 +1154,14 @@ const App: React.FC = () => {
                  <h3 className="text-sm md:text-lg font-retro text-white leading-tight">{t('leaderboard')}</h3>
               </div>
 
-              {/* Avatar Gallery */}
+              {/* Avatars Gallery */}
               <div 
-                onClick={() => handleNav(AppView.PROFILE)}
-                className="col-span-1 bg-gradient-to-br from-purple-900 to-indigo-900 rounded-2xl border-4 border-purple-700 hover:border-purple-400 cursor-pointer transition-all hover:-translate-y-1 relative overflow-hidden group p-4 flex flex-col items-center justify-center text-center"
+                onClick={() => handleNav(AppView.ARCHIVE)}
+                className="col-span-1 bg-gray-800 rounded-2xl border-4 border-gray-500 hover:border-white cursor-pointer transition-all hover:-translate-y-1 relative overflow-hidden group p-4 flex flex-col items-center justify-center text-center"
               >
-                <div className="text-3xl md:text-4xl mb-2 group-hover:scale-110 transition-transform">🎨</div>
-                <h3 className="text-sm md:text-lg font-retro text-white leading-tight">Avatar Gallery</h3>
-                <span className="text-[10px] text-purple-400 font-mono mt-1">Studio</span>
+                <div className="text-3xl md:text-4xl mb-2">🎨</div>
+                <h3 className="text-sm md:text-lg font-retro text-white leading-tight">Avatars</h3>
+                <span className="text-[10px] text-purple-400 font-mono mt-1">Gallery</span>
               </div>
 
                {/* Wiki */}
@@ -1200,7 +1200,7 @@ const App: React.FC = () => {
         <AdminView currentUser={gameState.user} onBack={handleBackToHome} />
       )}
 
-      {/* Archive View (New) */}
+      {/* Avatars Gallery View */}
       {gameState.view === AppView.ARCHIVE && (
         <PilgrimsArchiveView onBack={handleBackToHome} />
       )}
