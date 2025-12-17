@@ -21,7 +21,8 @@ export enum AppView {
   SUPPORT = 'SUPPORT',
   ADMIN = 'ADMIN',
   ACTIVITIES = 'ACTIVITIES',
-  COMMUNITY = 'COMMUNITY'
+  COMMUNITY = 'COMMUNITY',
+  MARKETPLACE = 'MARKETPLACE'
 }
 
 export interface Badge {
