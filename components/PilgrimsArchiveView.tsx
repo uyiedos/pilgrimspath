@@ -22,6 +22,7 @@ const PilgrimsArchiveView: React.FC<PilgrimsArchiveViewProps> = ({ onBack }) => 
   const [pilgrims, setPilgrims] = useState<PilgrimData[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
+  const [filter, setFilter] = useState<'all' | 'genesis' | 'forged'>('all');
   const PAGE_SIZE = 24;
 
   const fetchPilgrims = async (pageIndex: number) => {
@@ -75,15 +76,48 @@ const PilgrimsArchiveView: React.FC<PilgrimsArchiveViewProps> = ({ onBack }) => 
               <div className="text-5xl animate-float">💠</div>
               <div>
                 <h1 className="text-3xl md:text-5xl font-retro text-purple-400 drop-shadow-[4px_4px_0_rgba(0,0,0,1)]">
-                  JOURNEY NFT GALLERY
+                  JOURNEY OFFCHAIN ASSETS GALLERY
                 </h1>
                 <p className="text-gray-400 font-mono text-xs md:text-sm mt-2 tracking-widest uppercase">
-                  Digital Souls • Minted on Faith
+                  Digital Souls • Forged in Spirit
                 </p>
               </div>
            </div>
            
            <div className="mt-4 md:mt-0 flex flex-col items-end">
+               {/* Filter Buttons */}
+               <div className="flex gap-2 mb-3">
+                   <button
+                     onClick={() => setFilter('all')}
+                     className={`px-3 py-1 text-[10px] font-bold rounded border transition-all ${
+                       filter === 'all' 
+                         ? 'bg-purple-600 text-white border-purple-400' 
+                         : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'
+                     }`}
+                   >
+                       All Assets
+                   </button>
+                   <button
+                     onClick={() => setFilter('genesis')}
+                     className={`px-3 py-1 text-[10px] font-bold rounded border transition-all ${
+                       filter === 'genesis' 
+                         ? 'bg-blue-600 text-white border-blue-400' 
+                         : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'
+                     }`}
+                   >
+                       Genesis
+                   </button>
+                   <button
+                     onClick={() => setFilter('forged')}
+                     className={`px-3 py-1 text-[10px] font-bold rounded border transition-all ${
+                       filter === 'forged' 
+                         ? 'bg-orange-600 text-white border-orange-400' 
+                         : 'bg-gray-800 text-gray-400 border-gray-600 hover:bg-gray-700'
+                     }`}
+                   >
+                       Forged
+                   </button>
+               </div>
                <div className="bg-gray-900 border border-purple-500/50 px-3 py-1 rounded mb-2 text-xs font-mono text-purple-300">
                    ● Minting Status: Phase 2 (Soon)
                </div>
@@ -95,7 +129,14 @@ const PilgrimsArchiveView: React.FC<PilgrimsArchiveViewProps> = ({ onBack }) => 
 
         {/* Gallery Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 animate-fade-in pb-12">
-           {pilgrims.map((pilgrim) => {
+           {pilgrims
+             .filter((pilgrim) => {
+               const isForged = pilgrim.badges.includes('creator') || pilgrim.total_points > 10000;
+               if (filter === 'genesis') return !isForged;
+               if (filter === 'forged') return isForged;
+               return true; // 'all' filter
+             })
+             .map((pilgrim) => {
              // Mock Collection Logic based on XP/Badges for display
              const isForged = pilgrim.badges.includes('creator') || pilgrim.total_points > 10000;
              const collectionName = isForged ? 'Forged Collection' : 'Genesis Collection';
@@ -164,7 +205,7 @@ const PilgrimsArchiveView: React.FC<PilgrimsArchiveViewProps> = ({ onBack }) => 
              disabled={loading}
              className="bg-purple-900/30 border-purple-800 text-purple-200 hover:bg-purple-900"
            >
-             {loading ? 'Scanning Blockchain...' : 'Load More Assets'}
+             {loading ? 'Scanning Assets...' : 'Load More Assets'}
            </Button>
         </div>
 
