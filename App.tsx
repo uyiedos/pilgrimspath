@@ -26,6 +26,7 @@ import ProfileView from './components/ProfileView';
 import SupportView from './components/SupportView';
 import AdminView from './components/AdminView';
 import CommunityView from './components/CommunityView';
+import MarketplaceView from './components/MarketplaceView';
 import Button from './components/Button';
 import GuestConversionModal from './components/GuestConversionModal';
 
@@ -1073,13 +1074,26 @@ const App: React.FC = () => {
               {/* Community (NEW) */}
               <div 
                 onClick={() => handleNav(AppView.COMMUNITY)}
-                className="col-span-2 md:col-span-1 bg-gray-900 rounded-2xl border-4 border-gray-700 hover:border-yellow-600 cursor-pointer transition-all hover:-translate-y-1 relative overflow-hidden group min-h-[140px]"
+                className="col-span-1 bg-gray-900 rounded-2xl border-4 border-gray-700 hover:border-yellow-600 cursor-pointer transition-all hover:-translate-y-1 relative overflow-hidden group min-h-[140px]"
               >
                 <div className="absolute inset-0 bg-[url('https://image.pollinations.ai/prompt/pixel%20art%20campfire%20gathering%20night?width=300&height=300&nologo=true')] opacity-30 bg-cover"></div>
                 <div className="relative z-10 h-full flex flex-col items-center justify-center p-4">
                   <div className="text-4xl md:text-5xl mb-2 group-hover:scale-110 transition-transform">🔥</div>
                   <h3 className="text-lg font-retro text-white">{t('community')}</h3>
                   <span className="text-[10px] text-yellow-500 font-mono mt-1">Connect</span>
+                </div>
+              </div>
+
+              {/* Marketplace (NEW) */}
+              <div 
+                onClick={() => handleNav(AppView.MARKETPLACE)}
+                className="col-span-1 bg-purple-900 rounded-2xl border-4 border-purple-700 hover:border-purple-400 cursor-pointer transition-all hover:-translate-y-1 relative overflow-hidden group min-h-[140px]"
+              >
+                <div className="absolute inset-0 bg-[url('https://image.pollinations.ai/prompt/pixel%20art%20marketplace%20stall%20fantasy?width=300&height=300&nologo=true')] opacity-30 bg-cover"></div>
+                <div className="relative z-10 h-full flex flex-col items-center justify-center p-4">
+                  <div className="text-4xl md:text-5xl mb-2 group-hover:scale-110 transition-transform">🏪</div>
+                  <h3 className="text-lg font-retro text-white">Marketplace</h3>
+                  <span className="text-[10px] text-purple-400 font-mono mt-1">Trade</span>
                 </div>
               </div>
 
@@ -1350,6 +1364,16 @@ const App: React.FC = () => {
           language={gameState.language}
           onAddPoints={addPoints}
           onConvertGuest={() => setShowConversionModal(true)}
+        />
+      )}
+
+      {/* Marketplace View */}
+      {gameState.view === AppView.MARKETPLACE && (
+        <MarketplaceView
+          user={gameState.user}
+          onBack={handleBackToHome}
+          spendPoints={spendPoints}
+          onAddPoints={addPoints}
         />
       )}
 
