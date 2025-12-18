@@ -133,8 +133,8 @@ const App: React.FC = () => {
             duration: p.duration,
             progress: p.progress,
             isActive: p.is_active,
-            start_date: p.start_date,
-            end_date: p.end_date,
+            startDate: p.start_date,  // Fixed: was start_date
+            endDate: p.end_date,      // Fixed: was end_date
             lastCompletedDate: p.last_completed_date, // Map new field
             days: p.days_json || [] // Safety check for null JSON
          }));
