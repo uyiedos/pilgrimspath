@@ -12,7 +12,6 @@ interface JourneyTVViewProps {
   onBack: () => void;
   onChat?: () => void;
   language?: LanguageCode;
-  onSocialAction?: (action: 'like' | 'pray' | 'comment' | 'share') => void;
   spendPoints?: (amount: number) => Promise<boolean>;
 }
 
@@ -48,7 +47,7 @@ const DEFAULT_VIDEO: VideoContent = {
   created_at: new Date().toISOString()
 };
 
-const JourneyTVView: React.FC<JourneyTVViewProps> = ({ user, onBack, onChat, language = 'en', onSocialAction, spendPoints }) => {
+const JourneyTVView: React.FC<JourneyTVViewProps> = ({ user, onBack, onChat, language = 'en', spendPoints }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
@@ -284,7 +283,7 @@ const JourneyTVView: React.FC<JourneyTVViewProps> = ({ user, onBack, onChat, lan
       window.open(url, '_blank');
       // Still count view
       if (video.user_id !== user?.id) {
-          supabase.rpc('increment_video_likes', { vid_id: video.id }).catch(console.error); // Reuse increment logic or create view RPC
+          supabase.rpc('increment_video_likes', { vid_id: video.id }).then(() => {}, console.error); // Reuse increment logic or create view RPC
       }
   };
 
@@ -396,7 +395,6 @@ const JourneyTVView: React.FC<JourneyTVViewProps> = ({ user, onBack, onChat, lan
               setPreviewId(null);
               
               // Reward Broadcaster
-              if (onSocialAction) onSocialAction('share');
               AudioSystem.playAchievement();
               alert("Broadcast Listed! Users can now find your link on Journey TV.");
           }
@@ -414,7 +412,6 @@ const JourneyTVView: React.FC<JourneyTVViewProps> = ({ user, onBack, onChat, lan
           alert("Login to support creators.");
           return;
       }
-      if (onSocialAction) onSocialAction('like');
       
       // Optimistic Update
       const updatedList = videoList.map(v => v.id === video.id ? { ...v, likes: v.likes + 1 } : v);

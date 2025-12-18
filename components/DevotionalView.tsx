@@ -1,16 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import Button from './Button';
-import SocialActionBar from './SocialActionBar';
 import { generateDailyDevotional } from '../services/geminiService';
 import { LanguageCode } from '../translations';
 
 interface DevotionalViewProps {
   onBack: () => void;
-  onSocialAction?: (action: 'like' | 'pray' | 'comment' | 'share') => void;
   language?: LanguageCode;
 }
 
-const DevotionalView: React.FC<DevotionalViewProps> = ({ onBack, onSocialAction, language = 'en' }) => {
+const DevotionalView: React.FC<DevotionalViewProps> = ({ onBack, language = 'en' }) => {
   const [devotional, setDevotional] = useState<{
     title: string;
     scripture: string;
@@ -19,6 +17,49 @@ const DevotionalView: React.FC<DevotionalViewProps> = ({ onBack, onSocialAction,
   } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isMarkedAsRead, setIsMarkedAsRead] = useState(false);
+  const [timeUntilNextDevotion, setTimeUntilNextDevotion] = useState<string>('');
+
+  // Check if devotional was marked as read today and calculate countdown
+  useEffect(() => {
+    const checkReadStatus = () => {
+      const today = new Date().toDateString();
+      const lastReadDate = localStorage.getItem('devotional_last_read_date');
+      const lastReadTime = localStorage.getItem('devotional_last_read_time');
+      
+      if (lastReadDate === today) {
+        setIsMarkedAsRead(true);
+        if (lastReadTime) {
+          const nextDevotionTime = new Date(parseInt(lastReadTime));
+          nextDevotionTime.setDate(nextDevotionTime.getDate() + 1);
+          nextDevotionTime.setHours(0, 0, 0, 0);
+          
+          const updateCountdown = () => {
+            const now = new Date();
+            const timeDiff = nextDevotionTime.getTime() - now.getTime();
+            
+            if (timeDiff > 0) {
+              const hours = Math.floor(timeDiff / (1000 * 60 * 60));
+              const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
+              const seconds = Math.floor((timeDiff % (1000 * 60)) / 1000);
+              setTimeUntilNextDevotion(`${hours}h ${minutes}m ${seconds}s`);
+            } else {
+              setTimeUntilNextDevotion('Available now!');
+              setIsMarkedAsRead(false);
+            }
+          };
+          
+          updateCountdown();
+          const interval = setInterval(updateCountdown, 1000);
+          return () => clearInterval(interval);
+        }
+      } else {
+        setIsMarkedAsRead(false);
+        setTimeUntilNextDevotion('');
+      }
+    };
+    
+    checkReadStatus();
+  }, []);
 
   useEffect(() => {
     const loadDevotional = async () => {
@@ -45,8 +86,64 @@ const DevotionalView: React.FC<DevotionalViewProps> = ({ onBack, onSocialAction,
   }, [language]);
 
   const handleMarkAsRead = () => {
+    const now = new Date();
+    const today = now.toDateString();
+    
+    // Store the read date and timestamp
+    localStorage.setItem('devotional_last_read_date', today);
+    localStorage.setItem('devotional_last_read_time', now.getTime().toString());
+    
     setIsMarkedAsRead(true);
-    // Could add points or achievement tracking here
+    
+    // Calculate next devotion time and start countdown
+    const nextDevotionTime = new Date(now.getTime());
+    nextDevotionTime.setDate(nextDevotionTime.getDate() + 1);
+    nextDevotionTime.setHours(0, 0, 0, 0);
+    
+    const updateCountdown = () => {
+      const currentTime = new Date();
+      const timeDiff = nextDevotionTime.getTime() - currentTime.getTime();
+      
+      if (timeDiff > 0) {
+        const hours = Math.floor(timeDiff / (1000 * 60 * 60));
+        const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
+        const seconds = Math.floor((timeDiff % (1000 * 60)) / 1000);
+        setTimeUntilNextDevotion(`${hours}h ${minutes}m ${seconds}s`);
+      } else {
+        setTimeUntilNextDevotion('Available now!');
+        setIsMarkedAsRead(false);
+      }
+    };
+    
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 1000);
+    return () => clearInterval(interval);
+  };
+
+  const handleShareDevotional = async () => {
+    if (!devotional) return;
+    
+    const shareText = `Today's Devotional: "${devotional.title}"\n\nScripture: ${devotional.scripture}\n\n${devotional.content.substring(0, 200)}...\n\nRead more on The Journey App!`;
+    
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: devotional.title,
+          text: shareText,
+          url: window.location.href
+        });
+      } catch (err) {
+        console.log('Share cancelled');
+      }
+    } else {
+      // Fallback to clipboard
+      try {
+        await navigator.clipboard.writeText(shareText);
+        alert('Devotional copied to clipboard!');
+      } catch (err) {
+        alert('Share failed. Please copy manually.');
+      }
+    }
   };
 
   if (isLoading) {
@@ -128,18 +225,33 @@ const DevotionalView: React.FC<DevotionalViewProps> = ({ onBack, onSocialAction,
                 </p>
              </div>
              
-             <div className="mt-8 text-center">
-               <Button className="w-full md:w-auto">Mark as Read</Button>
-             </div>
+             <div className="mt-8 text-center space-y-4">
+              <div className="flex flex-col md:flex-row gap-4 justify-center items-center">
+                <Button 
+                  onClick={handleMarkAsRead}
+                  disabled={isMarkedAsRead}
+                  className={`w-full md:w-auto ${isMarkedAsRead ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-500'}`}
+                >
+                  {isMarkedAsRead ? 'Already Read Today' : 'Mark as Read'}
+                </Button>
+                
+                <Button 
+                  onClick={handleShareDevotional}
+                  className="w-full md:w-auto bg-blue-600 hover:bg-blue-500"
+                >
+                  Share Devotional
+                </Button>
+              </div>
+              
+              {isMarkedAsRead && timeUntilNextDevotion && (
+                <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                  <p className="text-sm text-yellow-800">
+                    <span className="font-semibold">Next devotional available in:</span> {timeUntilNextDevotion}
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
-          
-          {/* Social Engagement */}
-          {onSocialAction && (
-             <SocialActionBar 
-                onInteract={onSocialAction} 
-                entityName="Daily Devotional" 
-             />
-          )}
        </div>
     </div>
   );

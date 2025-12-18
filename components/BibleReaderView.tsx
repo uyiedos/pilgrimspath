@@ -6,7 +6,6 @@ import { AudioSystem } from '../utils/audio';
 
 interface BibleReaderViewProps {
   onBack: () => void;
-  onSocialAction?: (action: 'like' | 'pray' | 'comment' | 'share') => void;
   onSaveToJournal?: (type: 'verse', content: string, reference: string) => void;
 }
 
@@ -46,7 +45,7 @@ const ShareIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
-const BibleReaderView: React.FC<BibleReaderViewProps> = ({ onBack, onSocialAction, onSaveToJournal }) => {
+const BibleReaderView: React.FC<BibleReaderViewProps> = ({ onBack, onSaveToJournal }) => {
   // Default to WEB because it has consistent quotes for Red Letter logic
   const [version, setVersion] = useState('web');
   const [book, setBook] = useState('John');
@@ -114,7 +113,6 @@ const BibleReaderView: React.FC<BibleReaderViewProps> = ({ onBack, onSocialActio
     if (!sharingVerse) return;
     const textToShare = `"${sharingVerse.text.trim()}"\n— ${book} ${chapter}:${sharingVerse.verse} (${version.toUpperCase()})`;
     navigator.clipboard.writeText(textToShare);
-    if (onSocialAction) onSocialAction('share');
     AudioSystem.playVoxelTap();
     alert("Verse copied to clipboard!");
     closeShareModal();
@@ -125,7 +123,6 @@ const BibleReaderView: React.FC<BibleReaderViewProps> = ({ onBack, onSocialActio
     const text = `"${sharingVerse.text.trim()}" — ${book} ${chapter}:${sharingVerse.verse}`;
     const url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&hashtags=TheJourney,Scripture`;
     window.open(url, '_blank');
-    if (onSocialAction) onSocialAction('share');
     AudioSystem.playVoxelTap();
     closeShareModal();
   };
@@ -141,7 +138,6 @@ const BibleReaderView: React.FC<BibleReaderViewProps> = ({ onBack, onSocialActio
           text: textToShare,
           url: window.location.href,
         });
-        if (onSocialAction) onSocialAction('share');
         AudioSystem.playVoxelTap();
         closeShareModal();
       } catch (err) {

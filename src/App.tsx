@@ -1,33 +1,43 @@
 
-import React, { useState, useEffect } from 'react';
-import { AppView, GameState, GameModeId, User, Achievement, SupportTicket, BiblePlan, DifficultyMode, JournalEntry } from '../types';
-import { GAMES, ACHIEVEMENTS, PLAYER_LEVELS, BADGES, DEFAULT_PLANS, DAILY_POINT_LIMIT } from '../constants';
-import { UI_TEXT, LanguageCode, LANGUAGES } from '../translations';
-import { AudioSystem } from '../utils/audio';
-import { supabase } from '../lib/supabase';
-import LevelMap from '../components/LevelMap';
-import GameView from '../components/GameView';
-import JournalView from '../components/JournalView';
-import DevotionalView from '../components/DevotionalView';
-import PlansView from '../components/PlansView';
-import JourneyTVView from '../components/JourneyTVView';
-import GameLibraryView from '../components/GameLibraryView';
-import BibleReaderView from '../components/BibleReaderView';
-import AuthView from '../components/AuthView';
-import LeaderboardView from '../components/LeaderboardView';
-import PilgrimsArchiveView from '../components/PilgrimsArchiveView';
-import AchievementPopup from '../components/AchievementPopup';
-import LevelUpModal from '../components/LevelUpModal';
-import DailyRewardModal from '../components/DailyRewardModal';
-import WikiView, { WikiTab } from '../components/WikiView';
-import BibleActivitiesView from '../components/BibleActivitiesView';
-import TokenLaunchView from '../components/TokenLaunchView';
-import ProfileView from '../components/ProfileView';
-import SupportView from '../components/SupportView';
-import AdminView from '../components/AdminView';
-import CommunityView from '../components/CommunityView';
-import Button from '../components/Button';
-import GuestConversionModal from '../components/GuestConversionModal';
+import React, { useState, useEffect, useRef } from 'react';
+import { AppView, GameState, GameModeId, User, Achievement, SupportTicket, BiblePlan, DifficultyMode, JournalEntry } from './types';
+import { GAMES, ACHIEVEMENTS, PLAYER_LEVELS, BADGES, DEFAULT_PLANS, DAILY_POINT_LIMIT } from './constants';
+import { UI_TEXT, LanguageCode, LANGUAGES } from './translations';
+import { AudioSystem } from './utils/audio';
+import { supabase } from './lib/supabase';
+import LevelMap from './components/LevelMap';
+import GameView from './components/GameView';
+import JournalView from './components/JournalView';
+import DevotionalView from './components/DevotionalView';
+import PlansView from './components/PlansView';
+import JourneyTVView from './components/JourneyTVView';
+import GameLibraryView from './components/GameLibraryView';
+import BibleReaderView from './components/BibleReaderView';
+import AuthView from './components/AuthView';
+import LeaderboardView from './components/LeaderboardView';
+import PilgrimsArchiveView from './components/PilgrimsArchiveView';
+import AchievementPopup from './components/AchievementPopup';
+import LevelUpModal from './components/LevelUpModal';
+import DailyRewardModal from './components/DailyRewardModal';
+import WikiView, { WikiTab } from './components/WikiView';
+import BibleActivitiesView from './components/BibleActivitiesView';
+import TokenLaunchView from './components/TokenLaunchView';
+import ProfileView from './components/ProfileView';
+import SupportView from './components/SupportView';
+import AdminView from './components/AdminView';
+import CommunityView from './components/CommunityView';
+import MarketplaceView from './components/MarketplaceView';
+import Button from './components/Button';
+import GuestConversionModal from './components/GuestConversionModal';
+
+interface ChatMessage {
+  id: string;
+  user_id: string;
+  username: string;
+  avatar?: string;
+  message: string;
+  created_at: string;
+}
 
 const FloatingHomeButton = ({ onClick }: { onClick: () => void }) => (
   <button 
@@ -41,6 +51,13 @@ const FloatingHomeButton = ({ onClick }: { onClick: () => void }) => (
 );
 
 const App: React.FC = () => {
+  // Floating Chat State
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [showFloatingChat, setShowFloatingChat] = useState(false);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
   const [gameState, setGameState] = useState<GameState>({
     user: null,
     totalPoints: 0,
@@ -91,6 +108,55 @@ const App: React.FC = () => {
     }
   }, [gameState]);
 
+  // --- CHAT SETUP ---
+  useEffect(() => {
+    if (!gameState.user) return;
+
+    // Fetch initial messages
+    const fetchMessages = async () => {
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (error) {
+        console.error('Error fetching messages:', error);
+        return;
+      }
+
+      setChatMessages(data.reverse());
+    };
+
+    fetchMessages();
+
+    // Set up real-time subscription
+    const channel = supabase
+      .channel('public:chat_messages')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'chat_messages' },
+        (payload) => {
+          setChatMessages(prev => [...prev, payload.new as ChatMessage]);
+          if (!showFloatingChat) {
+            setChatUnreadCount(prev => prev + 1);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      channel.unsubscribe();
+    };
+  }, [gameState.user, showFloatingChat]);
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages]);
+
   // --- SUPABASE DATA LOADING ---
   const loadUserData = async (userId: string, currentPoints: number) => {
     // SKIP IF OFFLINE USER
@@ -132,8 +198,8 @@ const App: React.FC = () => {
             duration: p.duration,
             progress: p.progress,
             isActive: p.is_active,
-            start_date: p.start_date,
-            end_date: p.end_date,
+            startDate: p.start_date,  // Fixed: was start_date
+            endDate: p.end_date,      // Fixed: was end_date
             lastCompletedDate: p.last_completed_date, // Map new field
             days: p.days_json || [] // Safety check for null JSON
          }));
@@ -305,11 +371,62 @@ const App: React.FC = () => {
     }));
   };
 
+  // --- FLOATING CHAT FUNCTIONALITY ---
+  const setupFloatingChat = async () => {
+    if (!gameState.user) return;
+
+    // Fetch initial messages
+    const { data, error } = await supabase
+      .from('chat_messages')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error) {
+      console.error('Error fetching messages:', error);
+      return;
+    }
+
+    setChatMessages(data.reverse());
+
+    // Set up real-time subscription
+    const channel = supabase
+      .channel('public:chat_messages')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'chat_messages' },
+        (payload) => {
+          setChatMessages(prev => [...prev, payload.new as ChatMessage]);
+          if (!showFloatingChat && payload.new.user_id !== gameState.user?.id) {
+            setChatUnreadCount(prev => Math.min(prev + 1, 99));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      channel.unsubscribe();
+    };
+  };
+
+  useEffect(() => {
+    if (gameState.user) {
+      setupFloatingChat();
+    }
+  }, [gameState.user]);
+
+  useEffect(() => {
+    if (showFloatingChat) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      setChatUnreadCount(0);
+    }
+  }, [chatMessages, showFloatingChat]);
+
   // --- CONVERSION LOGIC ---
   const handleGuestConversion = async (email: string, password: string, username: string) => {
       if (!gameState.user) return;
 
-      // 1. Sign Up
+      // 1. Sign Up (Generates NEW UUID)
       const { data: authData, error: authError } = await supabase.auth.signUp({
           email,
           password
@@ -318,12 +435,12 @@ const App: React.FC = () => {
       if (authError) throw authError;
       if (!authData.user) throw new Error("Conversion failed: No user returned");
 
-      const newUserId = authData.user.id;
+      const newUserId = authData.user.id; // CRITICAL: This is the new Supabase UUID
       const generatedRefCode = (username.substring(0, 3).toUpperCase() + Math.random().toString(36).substring(2, 8).toUpperCase()).replace(/[^A-Z0-9]/g, 'X');
 
       // 2. Transfer Profile Data
-      await supabase.from('users').insert([{
-          id: newUserId,
+      const { error: profileError } = await supabase.from('users').insert([{
+          id: newUserId, // Use NEW ID
           email: email,
           username: username,
           avatar: gameState.user.avatar,
@@ -332,8 +449,15 @@ const App: React.FC = () => {
           badges: gameState.user.badges,
           difficulty: gameState.user.difficulty,
           archetype: gameState.user.archetype,
-          referral_code: generatedRefCode
+          referral_code: generatedRefCode,
+          daily_points_earned: gameState.user.dailyPointsEarned,
+          last_activity_date: gameState.user.lastActivityDate
       }]);
+
+      if (profileError) {
+          console.error("Profile creation failed", profileError);
+          // Attempt to continue, but this is critical
+      }
 
       // 3. Transfer Progress
       const progressInserts = Object.entries(gameState.progress).map(([gameId, levelId]) => ({
@@ -383,12 +507,43 @@ const App: React.FC = () => {
           });
       }
 
-      // 7. Clear Guest Data & Update State
+      // 7. Transfer Journal Entries (New)
+      if (gameState.journalEntries && gameState.journalEntries.length > 0) {
+          const journalInserts = gameState.journalEntries.map(j => ({
+              user_id: newUserId,
+              type: j.type,
+              content: j.content,
+              reference: j.reference,
+              created_at: j.createdAt
+          }));
+          await supabase.from('journal_entries').insert(journalInserts);
+      }
+
+      // 8. Record Avatar History (Initial State)
+      if (gameState.user.avatar) {
+          await supabase.from('avatar_history').insert({
+              user_id: newUserId,
+              avatar_url: gameState.user.avatar,
+              style_prompt: 'Migrated from Guest',
+              collection_name: 'Genesis'
+          });
+      }
+
+      // 9. Backfill Activity Feed (Join Event)
+      await supabase.from('activity_feed').insert({
+          user_id: newUserId,
+          username: username,
+          avatar: gameState.user.avatar,
+          activity_type: 'join',
+          details: { method: 'guest_conversion' }
+      });
+
+      // 10. Clear Guest Data & Update State
       localStorage.removeItem('journey_guest_state');
       
       const realUser: User = {
           ...gameState.user,
-          id: newUserId,
+          id: newUserId, // Swap to new ID in state
           email,
           username,
           referralCode: generatedRefCode,
@@ -401,7 +556,6 @@ const App: React.FC = () => {
       }));
 
       AudioSystem.playAchievement();
-      // Optional: Auto login logic handled by state update
   };
 
   const handleUpdateUser = async (updatedUser: User) => {
@@ -423,6 +577,30 @@ const App: React.FC = () => {
       activeGameId: gameId,
       view: AppView.MAP
     }));
+  };
+
+  const handleChatSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || !gameState.user) return;
+
+    const newMessage = {
+      user_id: gameState.user.id,
+      username: gameState.user.username,
+      avatar: gameState.user.avatar,
+      message: chatInput.trim(),
+      created_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase
+      .from('chat_messages')
+      .insert([newMessage]);
+
+    if (error) {
+      console.error('Error sending message:', error);
+      return;
+    }
+
+    setChatInput('');
   };
 
   const handleClaimDaily = async () => {
@@ -766,35 +944,6 @@ const App: React.FC = () => {
     }
   };
 
-  // Unified Social Interaction Handler with Points
-  const handleSocialInteraction = async (action: 'like' | 'pray' | 'comment' | 'share') => {
-    AudioSystem.playVoxelTap();
-    
-    let points = 0;
-    switch(action) {
-      case 'like': points = 5; break;
-      case 'pray': points = 5; break;
-      case 'comment': points = 10; break;
-      case 'share': points = 10; break; // Increased value for sharing (Bible/Content)
-    }
-    
-    addPoints(points);
-    if (action === 'comment') unlockAchievement('socialite'); 
-
-    if (gameState.user && !gameState.user.id.startsWith('offline-')) {
-        const entity = gameState.view; 
-        try {
-            await supabase.from('social_interactions').insert({
-                user_id: gameState.user.id,
-                action_type: action,
-                entity_context: entity
-            });
-        } catch (e) {
-            console.error("Failed to record social interaction", e);
-        }
-    }
-  };
-
   // --- EVENT HANDLERS ---
 
   const activeGame = GAMES.find(g => g.id === gameState.activeGameId) || GAMES[0];
@@ -1036,13 +1185,26 @@ const App: React.FC = () => {
               {/* Community (NEW) */}
               <div 
                 onClick={() => handleNav(AppView.COMMUNITY)}
-                className="col-span-2 md:col-span-1 bg-gray-900 rounded-2xl border-4 border-gray-700 hover:border-yellow-600 cursor-pointer transition-all hover:-translate-y-1 relative overflow-hidden group min-h-[140px]"
+                className="col-span-1 bg-gray-900 rounded-2xl border-4 border-gray-700 hover:border-yellow-600 cursor-pointer transition-all hover:-translate-y-1 relative overflow-hidden group min-h-[140px]"
               >
                 <div className="absolute inset-0 bg-[url('https://image.pollinations.ai/prompt/pixel%20art%20campfire%20gathering%20night?width=300&height=300&nologo=true')] opacity-30 bg-cover"></div>
                 <div className="relative z-10 h-full flex flex-col items-center justify-center p-4">
                   <div className="text-4xl md:text-5xl mb-2 group-hover:scale-110 transition-transform">🔥</div>
                   <h3 className="text-lg font-retro text-white">{t('community')}</h3>
                   <span className="text-[10px] text-yellow-500 font-mono mt-1">Connect</span>
+                </div>
+              </div>
+
+              {/* Marketplace (NEW) */}
+              <div 
+                onClick={() => handleNav(AppView.MARKETPLACE)}
+                className="col-span-1 bg-purple-900 rounded-2xl border-4 border-purple-700 hover:border-purple-400 cursor-pointer transition-all hover:-translate-y-1 relative overflow-hidden group min-h-[140px]"
+              >
+                <div className="absolute inset-0 bg-[url('https://image.pollinations.ai/prompt/pixel%20art%20marketplace%20stall%20fantasy?width=300&height=300&nologo=true')] opacity-30 bg-cover"></div>
+                <div className="relative z-10 h-full flex flex-col items-center justify-center p-4">
+                  <div className="text-4xl md:text-5xl mb-2 group-hover:scale-110 transition-transform">🏪</div>
+                  <h3 className="text-lg font-retro text-white">Marketplace</h3>
+                  <span className="text-[10px] text-purple-400 font-mono mt-1">Trade</span>
                 </div>
               </div>
 
@@ -1103,13 +1265,14 @@ const App: React.FC = () => {
                  <h3 className="text-sm md:text-lg font-retro text-white leading-tight">{t('leaderboard')}</h3>
               </div>
 
-              {/* Pilgrim's Archive */}
+              {/* Avatars Gallery */}
               <div 
                 onClick={() => handleNav(AppView.ARCHIVE)}
                 className="col-span-1 bg-gray-800 rounded-2xl border-4 border-gray-500 hover:border-white cursor-pointer transition-all hover:-translate-y-1 relative overflow-hidden group p-4 flex flex-col items-center justify-center text-center"
               >
-                <div className="text-3xl md:text-4xl mb-2">🏛️</div>
-                <h3 className="text-sm md:text-lg font-retro text-white leading-tight">Archive</h3>
+                <div className="text-3xl md:text-4xl mb-2">🎨</div>
+                <h3 className="text-sm md:text-lg font-retro text-white leading-tight">Avatars</h3>
+                <span className="text-[10px] text-purple-400 font-mono mt-1">Gallery</span>
               </div>
 
                {/* Wiki */}
@@ -1148,7 +1311,7 @@ const App: React.FC = () => {
         <AdminView currentUser={gameState.user} onBack={handleBackToHome} />
       )}
 
-      {/* Archive View (New) */}
+      {/* Avatars Gallery View */}
       {gameState.view === AppView.ARCHIVE && (
         <PilgrimsArchiveView onBack={handleBackToHome} />
       )}
@@ -1191,7 +1354,6 @@ const App: React.FC = () => {
         <JournalView 
           state={gameState}
           onBack={handleBackToHome}
-          onSocialAction={handleSocialInteraction}
           onSaveNote={(content) => handleAddJournalEntry('note', content)}
         />
       )}
@@ -1200,7 +1362,7 @@ const App: React.FC = () => {
       {gameState.view === AppView.DEVOTIONAL && (
         <DevotionalView 
           onBack={handleBackToHome} 
-          onSocialAction={handleSocialInteraction}
+          language={gameState.language}
         />
       )}
 
@@ -1209,7 +1371,6 @@ const App: React.FC = () => {
         <PlansView 
           onBack={handleBackToHome}
           onAddPoints={addPoints}
-          onSocialAction={handleSocialInteraction}
           language={gameState.language}
           plans={gameState.plans}
           onUpdatePlans={handleUpdatePlans}
@@ -1223,7 +1384,6 @@ const App: React.FC = () => {
           onBack={handleBackToHome}
           onChat={() => { addPoints(5); unlockAchievement('socialite'); }}
           language={gameState.language}
-          onSocialAction={handleSocialInteraction}
         />
       )}
 
@@ -1231,7 +1391,6 @@ const App: React.FC = () => {
       {gameState.view === AppView.BIBLE && (
         <BibleReaderView 
           onBack={handleBackToHome}
-          onSocialAction={handleSocialInteraction}
           onSaveToJournal={(type, content, ref) => handleAddJournalEntry(type, content, ref)}
         />
       )}
@@ -1286,7 +1445,6 @@ const App: React.FC = () => {
           onBack={handleBackToHome}
           onUpdateUser={handleUpdateUser}
           language={gameState.language}
-          onSocialAction={handleSocialInteraction}
           onUnlockAchievement={unlockAchievement}
           onAwardBadge={awardBadge}
           onConvertGuest={() => setShowConversionModal(true)}
@@ -1315,6 +1473,25 @@ const App: React.FC = () => {
           onConvertGuest={() => setShowConversionModal(true)}
         />
       )}
+
+      {/* Marketplace View */}
+      {gameState.view === AppView.MARKETPLACE && (
+        <MarketplaceView
+          user={gameState.user}
+          onBack={handleBackToHome}
+          spendPoints={spendPoints}
+          onAddPoints={addPoints}
+        />
+      )}
+      {/* Floating Chat Toggle Button */}
+      {gameState.user && (
+        <button 
+          onClick={() => { setShowFloatingChat(!showFloatingChat); setChatUnreadCount(0); }}
+          className="fixed bottom-6 right-6 z-[60] w-14 h-14 bg-blue-600 hover:bg-blue-500 rounded-full shadow-[0_0_20px_rgba(37,99,235,0.5)] flex items-center justify-center transition-all hover:scale-110 active:scale-95 border-2 border-white"
+          title="Live Chat"
+        >
+          <span className="text-2xl"></span>
+
 
     </>
   );

@@ -16,7 +16,6 @@ interface ProfileViewProps {
   onBack: () => void;
   onUpdateUser: (updatedUser: User) => void;
   language: LanguageCode;
-  onSocialAction?: (action: 'like' | 'pray' | 'comment' | 'share') => void;
   onUnlockAchievement?: (id: string) => void;
   onAwardBadge?: (id: string) => void;
   onConvertGuest?: () => void; 
@@ -73,7 +72,6 @@ const ProfileView: React.FC<ProfileViewProps> = ({
   onBack, 
   onUpdateUser,
   language,
-  onSocialAction,
   onUnlockAchievement,
   onAwardBadge,
   onConvertGuest,

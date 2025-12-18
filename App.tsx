@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AppView, GameState, GameModeId, User, Achievement, SupportTicket, BiblePlan, DifficultyMode, JournalEntry } from './types';
 import { GAMES, ACHIEVEMENTS, PLAYER_LEVELS, BADGES, DEFAULT_PLANS, DAILY_POINT_LIMIT } from './constants';
 import { UI_TEXT, LanguageCode, LANGUAGES } from './translations';
@@ -30,6 +30,15 @@ import MarketplaceView from './components/MarketplaceView';
 import Button from './components/Button';
 import GuestConversionModal from './components/GuestConversionModal';
 
+interface ChatMessage {
+  id: string;
+  user_id: string;
+  username: string;
+  avatar?: string;
+  message: string;
+  created_at: string;
+}
+
 const FloatingHomeButton = ({ onClick }: { onClick: () => void }) => (
   <button 
     onClick={onClick}
@@ -42,6 +51,13 @@ const FloatingHomeButton = ({ onClick }: { onClick: () => void }) => (
 );
 
 const App: React.FC = () => {
+  // Floating Chat State
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [showFloatingChat, setShowFloatingChat] = useState(false);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
   const [gameState, setGameState] = useState<GameState>({
     user: null,
     totalPoints: 0,
@@ -91,6 +107,55 @@ const App: React.FC = () => {
       localStorage.setItem('journey_guest_state', JSON.stringify(gameState));
     }
   }, [gameState]);
+
+  // --- CHAT SETUP ---
+  useEffect(() => {
+    if (!gameState.user) return;
+
+    // Fetch initial messages
+    const fetchMessages = async () => {
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (error) {
+        console.error('Error fetching messages:', error);
+        return;
+      }
+
+      setChatMessages(data.reverse());
+    };
+
+    fetchMessages();
+
+    // Set up real-time subscription
+    const channel = supabase
+      .channel('public:chat_messages')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'chat_messages' },
+        (payload) => {
+          setChatMessages(prev => [...prev, payload.new as ChatMessage]);
+          if (!showFloatingChat) {
+            setChatUnreadCount(prev => prev + 1);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      channel.unsubscribe();
+    };
+  }, [gameState.user, showFloatingChat]);
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages]);
 
   // --- SUPABASE DATA LOADING ---
   const loadUserData = async (userId: string, currentPoints: number) => {
@@ -306,6 +371,57 @@ const App: React.FC = () => {
     }));
   };
 
+  // --- FLOATING CHAT FUNCTIONALITY ---
+  const setupFloatingChat = async () => {
+    if (!gameState.user) return;
+
+    // Fetch initial messages
+    const { data, error } = await supabase
+      .from('chat_messages')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error) {
+      console.error('Error fetching messages:', error);
+      return;
+    }
+
+    setChatMessages(data.reverse());
+
+    // Set up real-time subscription
+    const channel = supabase
+      .channel('public:chat_messages')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'chat_messages' },
+        (payload) => {
+          setChatMessages(prev => [...prev, payload.new as ChatMessage]);
+          if (!showFloatingChat && payload.new.user_id !== gameState.user?.id) {
+            setChatUnreadCount(prev => Math.min(prev + 1, 99));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      channel.unsubscribe();
+    };
+  };
+
+  useEffect(() => {
+    if (gameState.user) {
+      setupFloatingChat();
+    }
+  }, [gameState.user]);
+
+  useEffect(() => {
+    if (showFloatingChat) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      setChatUnreadCount(0);
+    }
+  }, [chatMessages, showFloatingChat]);
+
   // --- CONVERSION LOGIC ---
   const handleGuestConversion = async (email: string, password: string, username: string) => {
       if (!gameState.user) return;
@@ -461,6 +577,30 @@ const App: React.FC = () => {
       activeGameId: gameId,
       view: AppView.MAP
     }));
+  };
+
+  const handleChatSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || !gameState.user) return;
+
+    const newMessage = {
+      user_id: gameState.user.id,
+      username: gameState.user.username,
+      avatar: gameState.user.avatar,
+      message: chatInput.trim(),
+      created_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase
+      .from('chat_messages')
+      .insert([newMessage]);
+
+    if (error) {
+      console.error('Error sending message:', error);
+      return;
+    }
+
+    setChatInput('');
   };
 
   const handleClaimDaily = async () => {
@@ -801,35 +941,6 @@ const App: React.FC = () => {
     } catch (e) {
         console.error("Spend error", e);
         return false;
-    }
-  };
-
-  // Unified Social Interaction Handler with Points
-  const handleSocialInteraction = async (action: 'like' | 'pray' | 'comment' | 'share') => {
-    AudioSystem.playVoxelTap();
-    
-    let points = 0;
-    switch(action) {
-      case 'like': points = 5; break;
-      case 'pray': points = 5; break;
-      case 'comment': points = 10; break;
-      case 'share': points = 10; break; // Increased value for sharing (Bible/Content)
-    }
-    
-    addPoints(points);
-    if (action === 'comment') unlockAchievement('socialite'); 
-
-    if (gameState.user && !gameState.user.id.startsWith('offline-')) {
-        const entity = gameState.view; 
-        try {
-            await supabase.from('social_interactions').insert({
-                user_id: gameState.user.id,
-                action_type: action,
-                entity_context: entity
-            });
-        } catch (e) {
-            console.error("Failed to record social interaction", e);
-        }
     }
   };
 
@@ -1243,7 +1354,6 @@ const App: React.FC = () => {
         <JournalView 
           state={gameState}
           onBack={handleBackToHome}
-          onSocialAction={handleSocialInteraction}
           onSaveNote={(content) => handleAddJournalEntry('note', content)}
         />
       )}
@@ -1252,7 +1362,7 @@ const App: React.FC = () => {
       {gameState.view === AppView.DEVOTIONAL && (
         <DevotionalView 
           onBack={handleBackToHome} 
-          onSocialAction={handleSocialInteraction}
+          language={gameState.language}
         />
       )}
 
@@ -1261,7 +1371,6 @@ const App: React.FC = () => {
         <PlansView 
           onBack={handleBackToHome}
           onAddPoints={addPoints}
-          onSocialAction={handleSocialInteraction}
           language={gameState.language}
           plans={gameState.plans}
           onUpdatePlans={handleUpdatePlans}
@@ -1275,7 +1384,6 @@ const App: React.FC = () => {
           onBack={handleBackToHome}
           onChat={() => { addPoints(5); unlockAchievement('socialite'); }}
           language={gameState.language}
-          onSocialAction={handleSocialInteraction}
         />
       )}
 
@@ -1283,7 +1391,6 @@ const App: React.FC = () => {
       {gameState.view === AppView.BIBLE && (
         <BibleReaderView 
           onBack={handleBackToHome}
-          onSocialAction={handleSocialInteraction}
           onSaveToJournal={(type, content, ref) => handleAddJournalEntry(type, content, ref)}
         />
       )}
@@ -1338,7 +1445,6 @@ const App: React.FC = () => {
           onBack={handleBackToHome}
           onUpdateUser={handleUpdateUser}
           language={gameState.language}
-          onSocialAction={handleSocialInteraction}
           onUnlockAchievement={unlockAchievement}
           onAwardBadge={awardBadge}
           onConvertGuest={() => setShowConversionModal(true)}
@@ -1377,7 +1483,16 @@ const App: React.FC = () => {
           onAddPoints={addPoints}
         />
       )}
-
+      {/* Floating Chat Toggle Button */}
+      {gameState.user && (
+        <button 
+          onClick={() => { setShowFloatingChat(!showFloatingChat); setChatUnreadCount(0); }}
+          className="fixed bottom-6 right-6 z-[60] w-14 h-14 bg-blue-600 hover:bg-blue-500 rounded-full shadow-[0_0_20px_rgba(37,99,235,0.5)] flex items-center justify-center transition-all hover:scale-110 active:scale-95 border-2 border-white"
+          title="Live Chat"
+        >
+          <span className="text-2xl"></span>
+        </button>
+      )}
     </>
   );
 };

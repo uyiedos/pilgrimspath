@@ -1,7 +1,6 @@
 
 import React, { useState } from 'react';
 import Button from './Button';
-import SocialActionBar from './SocialActionBar';
 import { AudioSystem } from '../utils/audio';
 import { LanguageCode, UI_TEXT } from '../translations';
 import { BiblePlan } from '../types';
@@ -10,7 +9,6 @@ import { supabase } from '../lib/supabase';
 interface PlansViewProps {
   onBack: () => void;
   onAddPoints: (points: number) => void;
-  onSocialAction: (action: 'like' | 'pray' | 'comment' | 'share') => void;
   language: LanguageCode;
   plans: BiblePlan[];
   onUpdatePlans: (plans: BiblePlan[]) => void;
@@ -20,7 +18,6 @@ interface PlansViewProps {
 const PlansView: React.FC<PlansViewProps> = ({ 
   onBack, 
   onAddPoints, 
-  onSocialAction, 
   language,
   plans,
   onUpdatePlans,
@@ -300,8 +297,6 @@ const PlansView: React.FC<PlansViewProps> = ({
   };
 
   const handleSharePlan = async (plan: BiblePlan) => {
-    if (onSocialAction) onSocialAction('share');
-    
     const textToShare = `Join me on The Journey! I'm starting the '${plan.title}' reading plan. \n\nFound on The Journey App.`;
     
     if (navigator.share) {
@@ -372,7 +367,6 @@ const PlansView: React.FC<PlansViewProps> = ({
                     <Button onClick={handleCompleteReading} className="w-full md:w-auto py-4 px-12 text-lg bg-green-600 hover:bg-green-500">
                        {t('complete_reading')} (+50 XP)
                     </Button>
-                    <SocialActionBar onInteract={onSocialAction} entityName={`Day ${activeReading.day.day}: ${activeReading.day.topic}`} />
                  </div>
              </div>
          </div>

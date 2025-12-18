@@ -8,11 +8,10 @@ import { AudioSystem } from '../utils/audio';
 interface JournalViewProps {
   state: GameState;
   onBack: () => void;
-  onSocialAction?: (action: 'like' | 'pray' | 'comment' | 'share') => void;
   onSaveNote?: (content: string) => void;
 }
 
-const JournalView: React.FC<JournalViewProps> = ({ state, onBack, onSocialAction, onSaveNote }) => {
+const JournalView: React.FC<JournalViewProps> = ({ state, onBack, onSaveNote }) => {
   const [activeTab, setActiveTab] = useState<'gameplay' | 'personal'>('gameplay');
   const [filter, setFilter] = useState<'all' | GameModeId>('all');
   const [newNote, setNewNote] = useState('');
@@ -82,8 +81,6 @@ const JournalView: React.FC<JournalViewProps> = ({ state, onBack, onSocialAction
 
   const handleShareVerse = async (verse: string, reference: string) => {
     const textToShare = `"${verse}"\n— ${reference}\nFound on The Journey App`;
-    
-    if (onSocialAction) onSocialAction('share');
 
     if (navigator.share) {
       try {
