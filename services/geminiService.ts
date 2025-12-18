@@ -202,6 +202,78 @@ export const getIntroMessage = async (level: LevelConfig, language: LanguageCode
   }
 }
 
+// --- DAILY DEVOTIONAL GENERATION ---
+export const generateDailyDevotional = async (language: LanguageCode = 'en'): Promise<{
+  title: string;
+  scripture: string;
+  content: string;
+  prayer: string;
+}> => {
+  // --- FALLBACK: SIMULATION MODE ---
+  if (!apiKey || !ai) {
+    return {
+      title: "The Morning Armor",
+      scripture: "Ephesians 6:10-11",
+      content: "The battles we face today are rarely just physical. They are battles of the mind, the heart, and the spirit. Waking up feels like stepping onto a battlefield where discouragement, anxiety, and apathy wait to ambush us.\n\nBut Paul reminds us that we do not walk out uncovered. The strength we need is not our own—it is 'in the Lord.' This is a relief! You don't have to manufacture courage this morning. You simply need to put on what He has already provided.\n\nToday, visualize yourself putting on that armor. Truth to guard your core. Righteousness to protect your heart. Peace to steady your feet. Faith to extinguish the sudden arrows of doubt.",
+      prayer: "Lord, I cannot fight today's battles in my own strength. I put on Your armor now. Cover my mind with Your salvation and my heart with Your righteousness. Help me stand firm. Amen."
+    };
+  }
+
+  const languageName = LANGUAGES.find(l => l.code === language)?.name || 'English';
+  const today = new Date().toLocaleDateString();
+
+  const systemInstruction = `
+    You are a spiritual devotional writer for a Christian mobile app called "The Journey".
+    CRITICAL: YOU MUST COMMUNICATE IN ${languageName.toUpperCase()}.
+    
+    Generate a fresh, inspiring daily devotional for ${today}. The devotional should:
+    - Have a meaningful title (3-6 words)
+    - Include a relevant Bible scripture reference (book chapter:verse)
+    - Write 2-3 paragraphs of encouraging, practical spiritual reflection (150-200 words total)
+    - End with a short, heartfelt prayer (20-40 words)
+    
+    Style: Warm, encouraging, practical, and deeply biblical. Focus on applying God's truth to daily life.
+    Avoid clichés and be fresh and authentic.
+    
+    Return in JSON format with: title, scripture, content, prayer
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: "Generate today's daily devotional.",
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING, description: "Devotional title" },
+            scripture: { type: Type.STRING, description: "Bible reference" },
+            content: { type: Type.STRING, description: "Devotional content" },
+            prayer: { type: Type.STRING, description: "Closing prayer" }
+          },
+          required: ["title", "scripture", "content", "prayer"]
+        }
+      }
+    });
+
+    const jsonText = response.text;
+    if (!jsonText) throw new Error("Empty response");
+    
+    return JSON.parse(jsonText);
+  } catch (error) {
+    console.error("Daily Devotional Generation Error:", error);
+    // Fallback to simulation
+    return {
+      title: "The Morning Armor",
+      scripture: "Ephesians 6:10-11", 
+      content: "The battles we face today are rarely just physical. They are battles of the mind, the heart, and the spirit. Waking up feels like stepping onto a battlefield where discouragement, anxiety, and apathy wait to ambush us.\n\nBut Paul reminds us that we do not walk out uncovered. The strength we need is not our own—it is 'in the Lord.' This is a relief! You don't have to manufacture courage this morning. You simply need to put on what He has already provided.\n\nToday, visualize yourself putting on that armor. Truth to guard your core. Righteousness to protect your heart. Peace to steady your feet. Faith to extinguish the sudden arrows of doubt.",
+      prayer: "Lord, I cannot fight today's battles in my own strength. I put on Your armor now. Cover my mind with Your salvation and my heart with Your righteousness. Help me stand firm. Amen."
+    };
+  }
+};
+
 // --- SIMULATION LOGIC (Offline/Free Mode) ---
 const simulateAIResponse = async (level: LevelConfig, input: string, difficulty: DifficultyMode = 'normal'): Promise<AIResponse> => {
   // Simulate network delay for realism

@@ -44,7 +44,21 @@ const PlansView: React.FC<PlansViewProps> = ({
 
   // Helper to check if a day is locked
   const isDayLocked = (plan: BiblePlan, dayNum: number) => {
-    if (!plan.isActive || !plan.startDate) return true;
+    if (!plan.isActive) return true;
+    
+    // If plan is active but has no startDate, set it to today
+    if (!plan.startDate) {
+      console.log('Plan has no startDate, setting to today');
+      const today = new Date().toISOString().split('T')[0];
+      const updatedPlans = plans.map(p => {
+        if (p.id === plan.id) {
+          return { ...p, startDate: today };
+        }
+        return p;
+      });
+      onUpdatePlans(updatedPlans);
+      return dayNum > 1; // Only day 1 should be unlocked for new plans
+    }
     
     // Calculate days passed since start date (inclusive)
     // e.g. Start 2023-10-01. Today 2023-10-01. Diff = 0. Day 1 should be unlocked.
@@ -52,9 +66,20 @@ const PlansView: React.FC<PlansViewProps> = ({
     const now = new Date().setHours(0,0,0,0);
     const daysPassed = Math.floor((now - start) / (1000 * 60 * 60 * 24));
     
+    // Debug logging
+    console.log('Unlock Debug:', {
+      planTitle: plan.title,
+      isActive: plan.isActive,
+      startDate: plan.startDate,
+      dayNum,
+      daysPassed,
+      isLocked: (dayNum - 1) > daysPassed
+    });
+    
     // DayNum 1 is index 0. Unlock logic:
     // If Day 1, needed daysPassed >= 0.
     // If Day 2, needed daysPassed >= 1.
+    // This logic is correct - day is locked if it's beyond days passed
     return (dayNum - 1) > daysPassed;
   };
 
@@ -212,7 +237,15 @@ const PlansView: React.FC<PlansViewProps> = ({
   };
 
   const handleOpenDay = (plan: BiblePlan, day: any) => {
-      if (plan.isActive && isDayLocked(plan, day.day)) {
+      // Debug: Always log before checking
+      console.log('=== Day Click Debug ===');
+      console.log('Plan:', plan.title, 'Active:', plan.isActive, 'Start:', plan.startDate);
+      console.log('Day clicked:', day.day);
+      
+      const locked = isDayLocked(plan, day.day);
+      console.log('Is locked result:', locked);
+      
+      if (plan.isActive && locked) {
           alert(`This day is locked until tomorrow. Patience is a virtue.`);
           return;
       }
