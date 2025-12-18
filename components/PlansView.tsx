@@ -48,7 +48,6 @@ const PlansView: React.FC<PlansViewProps> = ({
     
     // If plan is active but has no startDate, set it to today
     if (!plan.startDate) {
-      console.log('Plan has no startDate, setting to today');
       const today = new Date().toISOString().split('T')[0];
       const updatedPlans = plans.map(p => {
         if (p.id === plan.id) {
@@ -65,16 +64,6 @@ const PlansView: React.FC<PlansViewProps> = ({
     const start = new Date(plan.startDate).setHours(0,0,0,0);
     const now = new Date().setHours(0,0,0,0);
     const daysPassed = Math.floor((now - start) / (1000 * 60 * 60 * 24));
-    
-    // Debug logging
-    console.log('Unlock Debug:', {
-      planTitle: plan.title,
-      isActive: plan.isActive,
-      startDate: plan.startDate,
-      dayNum,
-      daysPassed,
-      isLocked: (dayNum - 1) > daysPassed
-    });
     
     // DayNum 1 is index 0. Unlock logic:
     // If Day 1, needed daysPassed >= 0.
@@ -237,13 +226,7 @@ const PlansView: React.FC<PlansViewProps> = ({
   };
 
   const handleOpenDay = (plan: BiblePlan, day: any) => {
-      // Debug: Always log before checking
-      console.log('=== Day Click Debug ===');
-      console.log('Plan:', plan.title, 'Active:', plan.isActive, 'Start:', plan.startDate);
-      console.log('Day clicked:', day.day);
-      
       const locked = isDayLocked(plan, day.day);
-      console.log('Is locked result:', locked);
       
       if (plan.isActive && locked) {
           alert(`This day is locked until tomorrow. Patience is a virtue.`);
