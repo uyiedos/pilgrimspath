@@ -1,0 +1,13 @@
+
+-- Function to increment total achievements for a community
+CREATE OR REPLACE FUNCTION increment_community_achievements(p_community_id uuid, p_amount int)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE public.communities
+  SET total_achievements = total_achievements + p_amount
+  WHERE id = p_community_id;
+END;
+$$;

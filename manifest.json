@@ -1,0 +1,22 @@
+{
+  "name": "The Journey: Pilgrim's Path",
+  "short_name": "The Journey",
+  "description": "A spiritual text-adventure game and community platform.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#ca8a04",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "https://image.pollinations.ai/prompt/pixel%20art%20cross%20icon%20gold?width=192&height=192&nologo=true",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://image.pollinations.ai/prompt/pixel%20art%20cross%20icon%20gold?width=512&height=512&nologo=true",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

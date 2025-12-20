@@ -1,0 +1,119 @@
+
+-- ==========================================
+-- GIVEAWAY SYSTEM SETUP
+-- ==========================================
+
+-- 1. Giveaways Table
+CREATE TABLE IF NOT EXISTS public.giveaways (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    poster_id uuid REFERENCES public.users(id) NOT NULL,
+    title text NOT NULL,
+    description text,
+    image text,
+    entry_fee int DEFAULT 100,
+    winners_count int DEFAULT 1,
+    status text DEFAULT 'active', -- active, drawn, cancelled
+    end_time timestamp with time zone NOT NULL,
+    winner_ids uuid[] DEFAULT '{}',
+    participants_count int DEFAULT 0,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- 2. Participants Table
+CREATE TABLE IF NOT EXISTS public.giveaway_participants (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    giveaway_id uuid REFERENCES public.giveaways(id) ON DELETE CASCADE,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    xp_at_entry bigint,
+    activity_at_entry int,
+    weight float8, -- Pre-calculated chance weight
+    created_at timestamp with time zone DEFAULT now(),
+    UNIQUE(giveaway_id, user_id)
+);
+
+-- 3. RLS
+ALTER TABLE public.giveaways ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.giveaway_participants ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Public Read Giveaways" ON public.giveaways FOR SELECT USING (true);
+CREATE POLICY "Auth Create Giveaway" ON public.giveaways FOR INSERT TO authenticated WITH CHECK (auth.uid() = poster_id);
+
+CREATE POLICY "Public Read Participants" ON public.giveaway_participants FOR SELECT USING (true);
+CREATE POLICY "Auth Join Giveaway" ON public.giveaway_participants FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+-- 4. RPC: Enter Giveaway
+CREATE OR REPLACE FUNCTION enter_giveaway(p_giveaway_id uuid, p_user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_fee int;
+    v_poster_id uuid;
+    v_user_xp bigint;
+    v_user_activity int;
+    v_weight float8;
+    v_treasury_share int;
+    v_poster_share int;
+BEGIN
+    -- 1. Check Giveaway
+    SELECT entry_fee, poster_id INTO v_fee, v_poster_id FROM public.giveaways WHERE id = p_giveaway_id AND status = 'active';
+    IF NOT FOUND THEN RAISE EXCEPTION 'Giveaway not found or inactive'; END IF;
+
+    -- 2. Check User
+    SELECT total_points, daily_points_earned INTO v_user_xp, v_user_activity FROM public.users WHERE id = p_user_id;
+    IF v_user_xp < v_fee THEN RAISE EXCEPTION 'Insufficient XP'; END IF;
+
+    -- 3. Deduct Fee
+    UPDATE public.users SET total_points = total_points - v_fee WHERE id = p_user_id;
+
+    -- 4. Calculate Split (30% Treasury, 70% Poster)
+    v_treasury_share := floor(v_fee * 0.3);
+    v_poster_share := v_fee - v_treasury_share;
+
+    UPDATE public.treasury SET balance = balance + v_treasury_share WHERE id = 1;
+    UPDATE public.users SET total_points = total_points + v_poster_share WHERE id = v_poster_id;
+
+    -- 5. Calculate Weight: (XP / 1000) + (Activity / 10) + 1
+    v_weight := (v_user_xp::float8 / 1000.0) + (v_user_activity::float8 / 10.0) + 1.0;
+
+    -- 6. Insert Participant
+    INSERT INTO public.giveaway_participants (giveaway_id, user_id, xp_at_entry, activity_at_entry, weight)
+    VALUES (p_giveaway_id, p_user_id, v_user_xp, v_user_activity, v_weight);
+
+    -- 7. Update Count
+    UPDATE public.giveaways SET participants_count = participants_count + 1 WHERE id = p_giveaway_id;
+
+    RETURN true;
+END;
+$$;
+
+-- 5. RPC: Create Giveaway (Checks Requirements)
+CREATE OR REPLACE FUNCTION create_giveaway(p_title text, p_desc text, p_image text, p_fee int, p_winners int, p_end timestamp with time zone, p_poster_id uuid)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_xp bigint;
+    v_new_id uuid;
+    v_create_fee int := 500; -- Cost to list a giveaway
+BEGIN
+    SELECT total_points INTO v_user_xp FROM public.users WHERE id = p_poster_id;
+    
+    -- Requirement: Level 5 (~2000-5000 XP) and 5000 XP threshold
+    IF v_user_xp < 5000 THEN
+        RAISE EXCEPTION 'Minimum 5000 XP required to host a giveaway.';
+    END IF;
+
+    -- Deduct Creation Fee
+    UPDATE public.users SET total_points = total_points - v_create_fee WHERE id = p_poster_id;
+    UPDATE public.treasury SET balance = balance + v_create_fee WHERE id = 1;
+
+    INSERT INTO public.giveaways (poster_id, title, description, image, entry_fee, winners_count, end_time, status)
+    VALUES (p_poster_id, p_title, p_desc, p_image, p_fee, p_winners, p_end, 'active')
+    RETURNING id INTO v_new_id;
+
+    RETURN v_new_id;
+END;
+$$;

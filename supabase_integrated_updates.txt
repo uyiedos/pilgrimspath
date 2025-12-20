@@ -1,0 +1,398 @@
+-- =================================================================
+-- THE JOURNEY: COMPREHENSIVE INTEGRATED UPDATE SCRIPT
+-- =================================================================
+-- This script sets up or updates all necessary tables, columns, 
+-- RLS policies, and RPC functions for the Journey ecosystem.
+-- =================================================================
+
+BEGIN;
+
+-- 0. FOUNDATIONS
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- =================================================================
+-- 1. CORE USER TABLE UPDATES
+-- =================================================================
+CREATE TABLE IF NOT EXISTS public.users (
+  id uuid REFERENCES auth.users NOT NULL PRIMARY KEY,
+  email text,
+  username text,
+  avatar text,
+  joined_date text,
+  total_points bigint DEFAULT 0,
+  last_daily_claim bigint DEFAULT 0,
+  badges text[] DEFAULT '{}'
+);
+
+-- Add missing columns to Users
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS daily_points_earned int DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_activity_date text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS role text DEFAULT 'user';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS difficulty text DEFAULT 'normal';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS referral_code text UNIQUE;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS referred_by text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS referrals_count int DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS archetype text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS sanctuary_background text;
+
+-- =================================================================
+-- 2. PROGRESSION & RECORDS
+-- =================================================================
+
+-- Game Progress
+CREATE TABLE IF NOT EXISTS public.user_progress (
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  game_id text NOT NULL,
+  level_id int DEFAULT 1,
+  PRIMARY KEY (user_id, game_id)
+);
+
+-- Collected Verses
+CREATE TABLE IF NOT EXISTS public.collected_verses (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  verse_text text NOT NULL
+);
+
+-- Unlocked Achievements
+CREATE TABLE IF NOT EXISTS public.unlocked_achievements (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  achievement_id text NOT NULL
+);
+
+-- Journal Entries (Personal Records)
+CREATE TABLE IF NOT EXISTS public.journal_entries (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  type text NOT NULL, -- 'verse' | 'note'
+  content text NOT NULL,
+  reference text, 
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- =================================================================
+-- 3. GLOBAL SOCIAL & FEED
+-- =================================================================
+
+-- Activity Feed (Global Milestones)
+CREATE TABLE IF NOT EXISTS public.activity_feed (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  username text,
+  avatar text,
+  activity_type text NOT NULL, -- 'levelup', 'achievement', 'badge', 'join'
+  details jsonb,
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- Global Chat
+CREATE TABLE IF NOT EXISTS public.chat_messages (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  username text NOT NULL,
+  avatar text,
+  message text NOT NULL,
+  reply_to_id uuid,
+  reply_context jsonb,
+  type text DEFAULT 'chat',
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- =================================================================
+-- 4. ECONOMY & MARKETPLACE
+-- =================================================================
+
+-- Treasury (Global Pool)
+CREATE TABLE IF NOT EXISTS public.treasury (
+    id int PRIMARY KEY DEFAULT 1,
+    balance bigint DEFAULT 0,
+    total_volume bigint DEFAULT 0,
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT single_row CHECK (id = 1)
+);
+INSERT INTO public.treasury (id, balance) VALUES (1, 0) ON CONFLICT DO NOTHING;
+
+-- Avatar Manifestation History
+CREATE TABLE IF NOT EXISTS public.avatar_history (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  avatar_url text NOT NULL,
+  style_prompt text,
+  collection_name text DEFAULT 'Genesis',
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- Marketplace Listings
+CREATE TABLE IF NOT EXISTS public.marketplace_listings (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    avatar_id uuid REFERENCES public.avatar_history(id) NOT NULL,
+    seller_id uuid REFERENCES public.users(id) NOT NULL,
+    price bigint NOT NULL CHECK (price >= 10),
+    attached_xp bigint DEFAULT 0,
+    status text DEFAULT 'active', -- 'active', 'sold', 'cancelled'
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- =================================================================
+-- 5. COMMUNITIES (GUILDS)
+-- =================================================================
+
+-- Communities
+CREATE TABLE IF NOT EXISTS public.communities (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  name text NOT NULL,
+  description text,
+  type text NOT NULL,
+  image text,
+  leader_id uuid REFERENCES public.users(id) NOT NULL,
+  member_count int DEFAULT 1,
+  treasury_balance bigint DEFAULT 0,
+  total_achievements int DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- Community Members
+CREATE TABLE IF NOT EXISTS public.community_members (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  community_id uuid REFERENCES public.communities(id) ON DELETE CASCADE NOT NULL,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  role text DEFAULT 'member',
+  joined_at timestamp with time zone DEFAULT now(),
+  UNIQUE(community_id, user_id)
+);
+
+-- Community Feed (Posts)
+CREATE TABLE IF NOT EXISTS public.community_posts (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  community_id uuid REFERENCES public.communities(id) ON DELETE CASCADE NOT NULL,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  content text NOT NULL,
+  type text DEFAULT 'general',
+  likes_count int DEFAULT 0,
+  comments_count int DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- =================================================================
+-- 6. RAFFLES & GIVEAWAYS
+-- =================================================================
+
+-- Giveaways (User Created)
+CREATE TABLE IF NOT EXISTS public.giveaways (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    poster_id uuid REFERENCES public.users(id) NOT NULL,
+    title text NOT NULL,
+    description text,
+    image text,
+    entry_fee int DEFAULT 100,
+    winners_count int DEFAULT 1,
+    status text DEFAULT 'active',
+    end_time timestamp with time zone NOT NULL,
+    winner_ids uuid[] DEFAULT '{}',
+    participants_count int DEFAULT 0,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- Giveaway Participants
+CREATE TABLE IF NOT EXISTS public.giveaway_participants (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    giveaway_id uuid REFERENCES public.giveaways(id) ON DELETE CASCADE,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    xp_at_entry bigint,
+    weight float8,
+    UNIQUE(giveaway_id, user_id)
+);
+
+-- Official Raffles (System Driven)
+CREATE TABLE IF NOT EXISTS public.raffles (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    sponsor_name text DEFAULT 'The Journey',
+    title text NOT NULL,
+    description text,
+    image text,
+    entry_fee int DEFAULT 50,
+    winners_count int DEFAULT 1,
+    status text DEFAULT 'active',
+    end_time timestamp with time zone NOT NULL,
+    winner_ids uuid[] DEFAULT '{}',
+    winner_emails text[] DEFAULT '{}',
+    participants_count int DEFAULT 0,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- Raffle Participants
+CREATE TABLE IF NOT EXISTS public.raffle_participants (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    raffle_id uuid REFERENCES public.raffles(id) ON DELETE CASCADE,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    user_email text,
+    weight float8,
+    UNIQUE(raffle_id, user_id)
+);
+
+-- =================================================================
+-- 7. RPC LOGIC (THE SACRED FUNCTIONS)
+-- =================================================================
+
+-- 7A. Generic Spend Points
+CREATE OR REPLACE FUNCTION spend_points(p_user_id uuid, p_amount int)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  current_points bigint;
+BEGIN
+  SELECT total_points INTO current_points FROM public.users WHERE id = p_user_id;
+  IF current_points < p_amount THEN RETURN false; END IF;
+  UPDATE public.users SET total_points = total_points - p_amount WHERE id = p_user_id;
+  RETURN true;
+END;
+$$;
+
+-- 7B. Marketplace: List Avatar
+CREATE OR REPLACE FUNCTION list_avatar(p_avatar_id uuid, p_seller_id uuid, p_price bigint, p_attached_xp bigint)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_current_xp bigint;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.avatar_history WHERE id = p_avatar_id AND user_id = p_seller_id) THEN
+        RAISE EXCEPTION 'Ownership verification failed';
+    END IF;
+
+    SELECT total_points INTO v_current_xp FROM public.users WHERE id = p_seller_id;
+    IF v_current_xp < p_attached_xp THEN RAISE EXCEPTION 'Insufficient XP to infuse'; END IF;
+
+    UPDATE public.users SET total_points = total_points - p_attached_xp WHERE id = p_seller_id;
+
+    INSERT INTO public.marketplace_listings (avatar_id, seller_id, price, attached_xp, status)
+    VALUES (p_avatar_id, p_seller_id, p_price, p_attached_xp, 'active');
+
+    RETURN true;
+END;
+$$;
+
+-- 7C. Marketplace: Buy Avatar
+CREATE OR REPLACE FUNCTION buy_avatar(p_listing_id uuid, p_buyer_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_seller_id uuid;
+    v_avatar_id uuid;
+    v_price bigint;
+    v_attached_xp bigint;
+    v_buyer_balance bigint;
+    v_fee bigint;
+    v_seller_share bigint;
+BEGIN
+    SELECT seller_id, avatar_id, price, attached_xp 
+    INTO v_seller_id, v_avatar_id, v_price, v_attached_xp
+    FROM public.marketplace_listings
+    WHERE id = p_listing_id AND status = 'active'
+    FOR UPDATE;
+
+    IF NOT FOUND THEN RAISE EXCEPTION 'Listing expired'; END IF;
+    IF v_seller_id = p_buyer_id THEN RAISE EXCEPTION 'Self-trading restricted'; END IF;
+
+    SELECT total_points INTO v_buyer_balance FROM public.users WHERE id = p_buyer_id;
+    IF v_buyer_balance < v_price THEN RAISE EXCEPTION 'Insufficient Spirit XP'; END IF;
+
+    v_fee := floor(v_price * 0.30);
+    v_seller_share := v_price - v_fee;
+
+    UPDATE public.users SET total_points = total_points - v_price + v_attached_xp WHERE id = p_buyer_id;
+    UPDATE public.users SET total_points = total_points + v_seller_share WHERE id = v_seller_id;
+    UPDATE public.treasury SET balance = balance + v_fee, total_volume = total_volume + v_price WHERE id = 1;
+
+    UPDATE public.avatar_history SET user_id = p_buyer_id WHERE id = v_avatar_id;
+    UPDATE public.marketplace_listings SET status = 'sold' WHERE id = p_listing_id;
+
+    RETURN true;
+END;
+$$;
+
+-- 7D. Giveaways: Create & Enter
+CREATE OR REPLACE FUNCTION create_giveaway(p_title text, p_desc text, p_image text, p_fee int, p_winners int, p_end timestamp with time zone, p_poster_id uuid)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_xp bigint;
+    v_new_id uuid;
+    v_create_fee int := 500;
+BEGIN
+    SELECT total_points INTO v_user_xp FROM public.users WHERE id = p_poster_id;
+    IF v_user_xp < 5000 THEN RAISE EXCEPTION 'Lvl 5 required to host gifts.'; END IF;
+
+    UPDATE public.users SET total_points = total_points - v_create_fee WHERE id = p_poster_id;
+    UPDATE public.treasury SET balance = balance + v_create_fee WHERE id = 1;
+
+    INSERT INTO public.giveaways (poster_id, title, description, image, entry_fee, winners_count, end_time, status)
+    VALUES (p_poster_id, p_title, p_desc, p_image, p_fee, p_winners, p_end, 'active')
+    RETURNING id INTO v_new_id;
+
+    RETURN v_new_id;
+END;
+$$;
+
+-- 7E. Raffles: Enter Official
+CREATE OR REPLACE FUNCTION enter_official_raffle(p_raffle_id uuid, p_user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_fee int;
+    v_user_xp bigint;
+    v_email text;
+BEGIN
+    SELECT entry_fee INTO v_fee FROM public.raffles WHERE id = p_raffle_id AND status = 'active';
+    IF NOT FOUND THEN RAISE EXCEPTION 'Raffle closed'; END IF;
+
+    SELECT total_points, email INTO v_user_xp, v_email FROM public.users WHERE id = p_user_id;
+    IF v_user_xp < v_fee THEN RAISE EXCEPTION 'Insufficient XP'; END IF;
+
+    UPDATE public.users SET total_points = total_points - v_fee WHERE id = p_user_id;
+    UPDATE public.treasury SET balance = balance + v_fee WHERE id = 1;
+
+    INSERT INTO public.raffle_participants (raffle_id, user_id, user_email, weight)
+    VALUES (p_raffle_id, p_user_id, v_email, 1.0)
+    ON CONFLICT (raffle_id, user_id) DO NOTHING;
+
+    UPDATE public.raffles SET participants_count = participants_count + 1 WHERE id = p_raffle_id;
+    RETURN true;
+END;
+$$;
+
+-- =================================================================
+-- 8. SECURITY POLICIES (RLS) - RESET & APPLY
+-- =================================================================
+DO $$ BEGIN
+    ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS "Public Profile Access" ON public.users;
+    CREATE POLICY "Public Profile Access" ON public.users FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Owner Update" ON public.users;
+    CREATE POLICY "Owner Update" ON public.users FOR UPDATE USING (auth.uid() = id);
+
+    ALTER TABLE public.avatar_history ENABLE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS "Public Artifact View" ON public.avatar_history;
+    CREATE POLICY "Public Artifact View" ON public.avatar_history FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Owner Manage" ON public.avatar_history;
+    CREATE POLICY "Owner Manage" ON public.avatar_history FOR ALL USING (auth.uid() = user_id);
+
+    -- Apply similar policies for Chat, Feed, Marketplace...
+    ALTER TABLE public.chat_messages ENABLE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS "Chat Read" ON public.chat_messages;
+    CREATE POLICY "Chat Read" ON public.chat_messages FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Chat Insert" ON public.chat_messages;
+    CREATE POLICY "Chat Insert" ON public.chat_messages FOR INSERT TO authenticated WITH CHECK (true);
+END $$;
+
+COMMIT;

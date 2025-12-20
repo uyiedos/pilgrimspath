@@ -1,0 +1,9 @@
+{
+  "name": "The Journey: Pilgrim's Path",
+  "description": "A spiritual sanctuary for Christian devotions and AI-guided prayer. Current Version: v9.0 Milestone - Admin Genesis.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}

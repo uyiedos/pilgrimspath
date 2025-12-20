@@ -1,0 +1,169 @@
+
+-- =================================================================
+-- GIVEAWAY ESCROW & ATOMIC DRAW MIGRATION
+-- =================================================================
+
+BEGIN;
+
+-- 1. ADD LOCKING MECHANISM TO AVATARS
+ALTER TABLE public.avatar_history 
+ADD COLUMN IF NOT EXISTS locked_for_giveaway_id uuid REFERENCES public.giveaways(id);
+
+-- 2. UPDATE CREATE_GIVEAWAY (With Escrow Locking)
+CREATE OR REPLACE FUNCTION create_giveaway(
+    p_title text, 
+    p_desc text, 
+    p_image text, 
+    p_fee int, 
+    p_winners int, 
+    p_end timestamp with time zone, 
+    p_poster_id uuid,
+    p_type text DEFAULT 'standard',
+    p_is_vested boolean DEFAULT false,
+    p_prize_asset_id uuid DEFAULT NULL,
+    p_social_link text DEFAULT NULL
+)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_xp bigint;
+    v_new_id uuid;
+    v_create_fee int := 500;
+BEGIN
+    -- Verify User Balance
+    SELECT total_points INTO v_user_xp FROM public.users WHERE id = p_poster_id;
+    
+    IF v_user_xp < 5000 THEN
+        RAISE EXCEPTION 'Minimum 5000 XP required to host a giveaway.';
+    END IF;
+
+    IF v_user_xp < v_create_fee THEN
+        RAISE EXCEPTION 'Insufficient XP to pay the 500 XP creation fee.';
+    END IF;
+
+    -- Verify Asset Ownership & Availability
+    IF p_prize_asset_id IS NOT NULL THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM public.avatar_history 
+            WHERE id = p_prize_asset_id 
+            AND user_id = p_poster_id 
+            AND locked_for_giveaway_id IS NULL -- Ensure not already locked
+        ) THEN
+            RAISE EXCEPTION 'You do not own the selected artifact or it is already locked in another giveaway.';
+        END IF;
+    END IF;
+
+    -- Deduct Creation Fee
+    UPDATE public.users SET total_points = total_points - v_create_fee WHERE id = p_poster_id;
+    UPDATE public.treasury SET balance = balance + v_create_fee WHERE id = 1;
+
+    -- Log Ledger
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_poster_id, v_create_fee, 'giveaway_fee', jsonb_build_object('title', p_title));
+
+    -- Insert Giveaway
+    INSERT INTO public.giveaways (
+        poster_id, title, description, image, entry_fee, winners_count, end_time, status, 
+        type, is_vested, prize_asset_id, social_link
+    )
+    VALUES (
+        p_poster_id, p_title, p_desc, p_image, p_fee, p_winners, p_end, 'active', 
+        p_type, p_is_vested, p_prize_asset_id, p_social_link
+    )
+    RETURNING id INTO v_new_id;
+
+    -- Lock the Asset if present (Escrow)
+    IF p_prize_asset_id IS NOT NULL THEN
+        UPDATE public.avatar_history 
+        SET locked_for_giveaway_id = v_new_id 
+        WHERE id = p_prize_asset_id;
+    END IF;
+
+    RETURN v_new_id;
+END;
+$$;
+
+-- 3. NEW RPC: DRAW GIVEAWAY WINNER (Atomic Logic)
+CREATE OR REPLACE FUNCTION draw_giveaway_winner(p_giveaway_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_giveaway record;
+    v_participants record;
+    v_total_weight float8;
+    v_winner_id uuid;
+    v_winner_name text;
+    v_random float8;
+    v_accum float8 := 0;
+BEGIN
+    -- Get Giveaway Info
+    SELECT * INTO v_giveaway FROM public.giveaways WHERE id = p_giveaway_id;
+    
+    IF v_giveaway.status <> 'active' THEN
+        RAISE EXCEPTION 'Giveaway is not active';
+    END IF;
+
+    IF v_giveaway.end_time > now() THEN
+        RAISE EXCEPTION 'Giveaway time has not ended';
+    END IF;
+
+    -- Get Total Weight
+    SELECT SUM(weight) INTO v_total_weight FROM public.giveaway_participants WHERE giveaway_id = p_giveaway_id;
+
+    IF v_total_weight IS NULL OR v_total_weight = 0 THEN
+        -- No participants, cancel and release lock
+        UPDATE public.giveaways SET status = 'cancelled' WHERE id = p_giveaway_id;
+        
+        IF v_giveaway.prize_asset_id IS NOT NULL THEN
+            UPDATE public.avatar_history SET locked_for_giveaway_id = NULL WHERE id = v_giveaway.prize_asset_id;
+        END IF;
+        
+        RETURN jsonb_build_object('success', false, 'message', 'No participants found.');
+    END IF;
+
+    -- Weighted Random Selection
+    v_random := random() * v_total_weight;
+    
+    FOR v_participants IN 
+        SELECT user_id, weight, users.username 
+        FROM public.giveaway_participants 
+        JOIN public.users ON users.id = giveaway_participants.user_id 
+        WHERE giveaway_id = p_giveaway_id 
+    LOOP
+        v_accum := v_accum + v_participants.weight;
+        IF v_random <= v_accum THEN
+            v_winner_id := v_participants.user_id;
+            v_winner_name := v_participants.username;
+            EXIT;
+        END IF;
+    END LOOP;
+
+    -- Update Giveaway Status
+    UPDATE public.giveaways 
+    SET status = 'drawn', winner_ids = ARRAY[v_winner_id] 
+    WHERE id = p_giveaway_id;
+
+    -- Transfer Asset (Release Escrow to Winner)
+    IF v_giveaway.prize_asset_id IS NOT NULL THEN
+        UPDATE public.avatar_history 
+        SET user_id = v_winner_id, locked_for_giveaway_id = NULL 
+        WHERE id = v_giveaway.prize_asset_id;
+        
+        -- Log Asset Transfer Activity
+        INSERT INTO public.activity_feed (user_id, activity_type, details)
+        VALUES (
+            v_winner_id, 
+            'achievement', 
+            jsonb_build_object('title', 'Giveaway Won', 'item', 'Artifact', 'giveaway', v_giveaway.title)
+        );
+    END IF;
+
+    RETURN jsonb_build_object('success', true, 'winner_name', v_winner_name, 'winner_id', v_winner_id);
+END;
+$$;
+
+COMMIT;
