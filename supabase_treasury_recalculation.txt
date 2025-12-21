@@ -1,0 +1,140 @@
+
+-- =================================================================
+-- THE JOURNEY: TREASURY RECALCULATION & XP RECOVERY (v9.8)
+-- Fixes missing fees and restores lost Spirit XP to pilgrims.
+-- =================================================================
+
+BEGIN;
+
+-- 1. ENSURE LEDGER TABLES EXIST
+CREATE TABLE IF NOT EXISTS public.transactions (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    sender_id uuid REFERENCES public.users(id), 
+    receiver_id uuid REFERENCES public.users(id),
+    amount bigint NOT NULL,
+    type text NOT NULL, -- 'forge_cost', 'market_fee', 'listing_fee', 'tithe', 'reward'
+    metadata jsonb,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- 2. UNIVERSAL SPENDING RPC (Ensures Treasury Capture)
+CREATE OR REPLACE FUNCTION spend_points(p_user_id uuid, p_amount int, p_type text DEFAULT 'system_fee')
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_current_points bigint;
+BEGIN
+  SELECT total_points INTO v_current_points FROM public.users WHERE id = p_user_id;
+  
+  IF v_current_points < p_amount THEN RETURN false; END IF;
+
+  -- 1. Deduct from User
+  UPDATE public.users SET total_points = total_points - p_amount WHERE id = p_user_id;
+  
+  -- 2. Add to Treasury
+  UPDATE public.treasury SET balance = balance + p_amount, total_volume = total_volume + p_amount WHERE id = 1;
+
+  -- 3. Log to Transaction Ledger
+  INSERT INTO public.transactions (sender_id, amount, type)
+  VALUES (p_user_id, p_amount, p_type);
+
+  RETURN true;
+END;
+$$;
+
+-- 3. MARKETPLACE: LISTING FEE & INFUSION
+CREATE OR REPLACE FUNCTION list_avatar(p_avatar_id uuid, p_seller_id uuid, p_price bigint, p_attached_xp bigint)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_current_xp bigint;
+    v_listing_fee int := 100; -- Standard cost to scribe on the market
+BEGIN
+    -- Verify ownership
+    IF NOT EXISTS (SELECT 1 FROM public.avatar_history WHERE id = p_avatar_id AND user_id = p_seller_id) THEN
+        RAISE EXCEPTION 'You do not own this artifact.';
+    END IF;
+
+    -- Check balance for both fee and infusion
+    SELECT total_points INTO v_current_xp FROM public.users WHERE id = p_seller_id;
+    IF v_current_xp < (p_attached_xp + v_listing_fee) THEN
+        RAISE EXCEPTION 'Insufficient XP (Need % for infusion + % for fee)', p_attached_xp, v_listing_fee;
+    END IF;
+
+    -- 1. Deduct total from Seller
+    UPDATE public.users SET total_points = total_points - (p_attached_xp + v_listing_fee) WHERE id = p_seller_id;
+    
+    -- 2. Feed the Treasury the fee
+    UPDATE public.treasury SET balance = balance + v_listing_fee WHERE id = 1;
+
+    -- 3. Create Listing
+    INSERT INTO public.marketplace_listings (avatar_id, seller_id, price, attached_xp, status)
+    VALUES (p_avatar_id, p_seller_id, p_price, p_attached_xp, 'active');
+
+    -- 4. Log Transaction
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_seller_id, v_listing_fee, 'listing_fee', jsonb_build_object('avatar_id', p_avatar_id));
+
+    RETURN true;
+END;
+$$;
+
+-- 4. THE GREAT SPIRIT AUDIT (RECOVERY LOGIC)
+-- This temporary script recalculates what a user SHOULD have based on their immutable actions
+DO $$
+DECLARE
+    r record;
+    v_earned_achievements bigint;
+    v_earned_devotionals bigint;
+    v_earned_levels bigint;
+    v_total_spent bigint;
+    v_new_total bigint;
+BEGIN
+    FOR r IN SELECT id, username FROM public.users LOOP
+        
+        -- A. Calculate Achievement XP
+        SELECT COALESCE(SUM(reward_xp), 0) INTO v_earned_achievements 
+        FROM (
+            SELECT 
+                CASE 
+                    WHEN achievement_id = 'first_step' THEN 100
+                    WHEN achievement_id = 'identity_found' THEN 150
+                    WHEN achievement_id = 'scripture_hunter' THEN 1000
+                    WHEN achievement_id = 'david_complete' THEN 1500
+                    ELSE 50 -- default for unknown/small ones
+                END as reward_xp
+            FROM public.unlocked_achievements 
+            WHERE user_id = r.id
+        ) ach;
+
+        -- B. Calculate Devotional XP (50 per completion)
+        SELECT COUNT(*) * 50 INTO v_earned_devotionals 
+        FROM public.user_devotional_completions 
+        WHERE user_id = r.id;
+
+        -- C. Calculate Level XP (Avg 200 per cleared circle)
+        SELECT COALESCE(SUM((level_id - 1) * 200), 0) INTO v_earned_levels 
+        FROM public.user_progress 
+        WHERE user_id = r.id;
+
+        -- D. Calculate Verifiable Spending (Audit Ledger)
+        SELECT COALESCE(SUM(amount), 0) INTO v_total_spent 
+        FROM public.transactions 
+        WHERE sender_id = r.id;
+
+        -- E. Set the new total (Protect against negative values)
+        v_new_total := GREATEST(0, (v_earned_achievements + v_earned_devotionals + v_earned_levels) - v_total_spent);
+
+        -- F. Recovery Update (Only if current total is less than the audited total)
+        UPDATE public.users 
+        SET total_points = GREATEST(total_points, v_new_total)
+        WHERE id = r.id;
+
+    END LOOP;
+END $$;
+
+COMMIT;

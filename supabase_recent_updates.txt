@@ -1,0 +1,135 @@
+
+-- =================================================================
+-- THE JOURNEY: RECENT UPDATES SYNC (v9.2)
+-- Includes: Bible Plans, Forge Styles, and Economy Logic
+-- =================================================================
+
+BEGIN;
+
+-- 0. FOUNDATIONS
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- =================================================================
+-- 1. BIBLE PLANS SYSTEM (Functional Tracking)
+-- =================================================================
+
+CREATE TABLE IF NOT EXISTS public.user_plans (
+    id text NOT NULL, 
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    PRIMARY KEY (user_id, id)
+);
+
+-- Ensure all necessary columns exist for progress tracking
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS title text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS description text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS category text DEFAULT 'Study';
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS image text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS duration int DEFAULT 1;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS progress int DEFAULT 0;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS is_active boolean DEFAULT false;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS start_date text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS end_date text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS last_completed_date text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS days_json jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS updated_at timestamp with time zone DEFAULT now();
+
+-- =================================================================
+-- 2. CORE USER & FORGE UPDATES
+-- =================================================================
+
+-- Add archetype and sanctuary columns to users
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS archetype text DEFAULT 'Wanderer';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS sanctuary_background text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS daily_points_earned int DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_activity_date text;
+
+-- Enhance Avatar History for Forge Manifestations
+ALTER TABLE public.avatar_history ADD COLUMN IF NOT EXISTS collection_name text DEFAULT 'Genesis';
+ALTER TABLE public.avatar_history ADD COLUMN IF NOT EXISTS style_prompt text;
+
+-- =================================================================
+-- 3. GLOBAL CHAT & MILESTONES
+-- =================================================================
+
+-- Ensure chat supports system milestones
+ALTER TABLE public.chat_messages ADD COLUMN IF NOT EXISTS type text DEFAULT 'chat';
+ALTER TABLE public.chat_messages ADD COLUMN IF NOT EXISTS reply_context jsonb;
+
+-- =================================================================
+-- 4. ECONOMY & TREASURY RPCs
+-- =================================================================
+
+-- Singleton Treasury Table
+CREATE TABLE IF NOT EXISTS public.treasury (
+    id int PRIMARY KEY DEFAULT 1,
+    balance bigint DEFAULT 0,
+    total_volume bigint DEFAULT 0,
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT single_row CHECK (id = 1)
+);
+INSERT INTO public.treasury (id, balance) VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
+
+-- Safe Spend Points Function (Atomic)
+CREATE OR REPLACE FUNCTION spend_points(p_user_id uuid, p_amount int, p_type text DEFAULT 'system_fee')
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  current_points bigint;
+BEGIN
+  SELECT total_points INTO current_points FROM public.users WHERE id = p_user_id;
+  
+  IF current_points < p_amount THEN 
+    RETURN false; 
+  END IF;
+
+  -- Deduct from user
+  UPDATE public.users SET total_points = total_points - p_amount WHERE id = p_user_id;
+  
+  -- Add to Treasury
+  UPDATE public.treasury SET balance = balance + p_amount WHERE id = 1;
+
+  -- Log Activity (If activity_feed exists)
+  -- INSERT INTO public.activity_feed (user_id, activity_type, details)
+  -- VALUES (p_user_id, 'transaction', jsonb_build_object('type', p_type, 'amount', p_amount));
+
+  RETURN true;
+END;
+$$;
+
+-- Global Stats Helper
+CREATE OR REPLACE FUNCTION public.get_global_stats()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  total_users_count int;
+  total_xp_sum bigint;
+BEGIN
+  SELECT count(*) INTO total_users_count FROM public.users;
+  SELECT sum(total_points) INTO total_xp_sum FROM public.users;
+  
+  RETURN jsonb_build_object(
+    'users', total_users_count,
+    'xp', COALESCE(total_xp_sum, 0)
+  );
+END;
+$$;
+
+-- =================================================================
+-- 5. RLS POLICIES (Idempotent)
+-- =================================================================
+
+ALTER TABLE public.user_plans ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users manage own plans" ON public.user_plans;
+CREATE POLICY "Users manage own plans" ON public.user_plans 
+FOR ALL USING (auth.uid() = user_id);
+
+ALTER TABLE public.treasury ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public view treasury" ON public.treasury;
+CREATE POLICY "Public view treasury" ON public.treasury 
+FOR SELECT USING (true);
+
+COMMIT;

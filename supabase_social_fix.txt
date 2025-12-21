@@ -1,0 +1,47 @@
+
+-- ==========================================
+-- SOCIAL FEATURE FIXES
+-- ==========================================
+
+BEGIN;
+
+-- 1. Ensure Activity Feed is Writable
+-- This fixes issues where 'sharing' or 'posting' milestones fail to log
+DROP POLICY IF EXISTS "Auth Insert Activity" ON public.activity_feed;
+CREATE POLICY "Auth Insert Activity" ON public.activity_feed 
+FOR INSERT TO authenticated 
+WITH CHECK (auth.uid() = user_id);
+
+-- 2. Ensure Community Posts are Writable
+DROP POLICY IF EXISTS "Auth Insert Posts" ON public.community_posts;
+CREATE POLICY "Auth Insert Posts" ON public.community_posts 
+FOR INSERT TO authenticated 
+WITH CHECK (auth.uid() = user_id);
+
+-- 3. Ensure 'share' is a valid activity type (if constrained, though currently text)
+-- If you had an enum, you'd alter it here. Since it's text, we are good.
+
+-- 4. RPC: Grant Share Rewards (Safe Backend Logic)
+CREATE OR REPLACE FUNCTION grant_share_reward(p_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  -- Grant XP
+  UPDATE public.users 
+  SET total_points = total_points + 20,
+      daily_points_earned = daily_points_earned + 20
+  WHERE id = p_user_id;
+  
+  -- Log it
+  INSERT INTO public.activity_feed (user_id, activity_type, details)
+  VALUES (
+    p_user_id, 
+    'achievement', 
+    jsonb_build_object('title', 'Evangelist', 'icon', '📢', 'reward', 20)
+  );
+END;
+$$;
+
+COMMIT;

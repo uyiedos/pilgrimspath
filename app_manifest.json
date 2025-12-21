@@ -1,0 +1,42 @@
+
+{
+  "name": "The Journey: Pilgrim's Path",
+  "version": "9.5.0",
+  "description": "A spiritual sanctuary for Christian devotions, AI-guided prayer, and gamified biblical adventures.",
+  "author": "Journey Team",
+  "license": "MIT",
+  "config": {
+    "api_provider": "google_gemini",
+    "database_provider": "supabase",
+    "blockchain_network": "solana",
+    "token_symbol": "JOURNEY"
+  },
+  "features": {
+    "ai_storytelling": true,
+    "voice_prayer": true,
+    "image_generation": true,
+    "marketplace": true,
+    "community_guilds": true,
+    "live_streaming": true,
+    "raffles": true,
+    "giveaways": true
+  },
+  "routes": {
+    "home": "/",
+    "game": "/game",
+    "profile": "/profile",
+    "community": "/community",
+    "market": "/market",
+    "admin": "/admin",
+    "prayer": "/prayer"
+  },
+  "assets": {
+    "icon_192": "https://image.pollinations.ai/prompt/pixel%20art%20cross%20icon%20gold?width=192&height=192&nologo=true",
+    "icon_512": "https://image.pollinations.ai/prompt/pixel%20art%20cross%20icon%20gold?width=512&height=512&nologo=true",
+    "splash_screen": "https://image.pollinations.ai/prompt/pixel%20art%20ancient%20biblical%20map%20middle%20east%20parchment?width=1200&height=630&nologo=true"
+  },
+  "requirements": {
+    "min_xp_for_giveaway": 5000,
+    "daily_xp_cap": 1000
+  }
+}

@@ -1,0 +1,87 @@
+
+-- =================================================================
+-- GIVEAWAY V2: ASSETS, SOCIALS & VESTING MIGRATION
+-- Run this to update your Giveaways table and logic
+-- =================================================================
+
+BEGIN;
+
+-- 1. ADD NEW COLUMNS (Idempotent)
+ALTER TABLE public.giveaways 
+ADD COLUMN IF NOT EXISTS type text DEFAULT 'standard',
+ADD COLUMN IF NOT EXISTS is_vested boolean DEFAULT false,
+ADD COLUMN IF NOT EXISTS prize_asset_id uuid REFERENCES public.avatar_history(id),
+ADD COLUMN IF NOT EXISTS social_link text;
+
+-- 2. INDEXES FOR NEW COLUMNS
+CREATE INDEX IF NOT EXISTS giveaways_type_idx ON public.giveaways (type);
+CREATE INDEX IF NOT EXISTS giveaways_poster_idx ON public.giveaways (poster_id);
+
+-- 3. UPDATE CREATE_GIVEAWAY FUNCTION
+-- This overrides the previous function to accept the new parameters
+CREATE OR REPLACE FUNCTION create_giveaway(
+    p_title text, 
+    p_desc text, 
+    p_image text, 
+    p_fee int, 
+    p_winners int, 
+    p_end timestamp with time zone, 
+    p_poster_id uuid,
+    p_type text DEFAULT 'standard',
+    p_is_vested boolean DEFAULT false,
+    p_prize_asset_id uuid DEFAULT NULL,
+    p_social_link text DEFAULT NULL
+)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_xp bigint;
+    v_new_id uuid;
+    v_create_fee int := 500;
+BEGIN
+    -- Verify User Balance (Need 5000 Total to unlock, AND enough to pay fee)
+    SELECT total_points INTO v_user_xp FROM public.users WHERE id = p_poster_id;
+    
+    IF v_user_xp < 5000 THEN
+        RAISE EXCEPTION 'Minimum 5000 XP required to host a giveaway.';
+    END IF;
+
+    IF v_user_xp < v_create_fee THEN
+        RAISE EXCEPTION 'Insufficient XP to pay the 500 XP creation fee.';
+    END IF;
+
+    -- Verify Asset Ownership if provided (Prevent listing items you don't own)
+    IF p_prize_asset_id IS NOT NULL THEN
+        IF NOT EXISTS (SELECT 1 FROM public.avatar_history WHERE id = p_prize_asset_id AND user_id = p_poster_id) THEN
+            RAISE EXCEPTION 'You do not own the selected artifact.';
+        END IF;
+    END IF;
+
+    -- Deduct Creation Fee from Poster
+    UPDATE public.users SET total_points = total_points - v_create_fee WHERE id = p_poster_id;
+    
+    -- Add Fee to Main Treasury
+    UPDATE public.treasury SET balance = balance + v_create_fee WHERE id = 1;
+
+    -- Log Ledger
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_poster_id, v_create_fee, 'giveaway_fee', jsonb_build_object('title', p_title));
+
+    -- Insert Giveaway
+    INSERT INTO public.giveaways (
+        poster_id, title, description, image, entry_fee, winners_count, end_time, status, 
+        type, is_vested, prize_asset_id, social_link
+    )
+    VALUES (
+        p_poster_id, p_title, p_desc, p_image, p_fee, p_winners, p_end, 'active', 
+        p_type, p_is_vested, p_prize_asset_id, p_social_link
+    )
+    RETURNING id INTO v_new_id;
+
+    RETURN v_new_id;
+END;
+$$;
+
+COMMIT;

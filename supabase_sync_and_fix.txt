@@ -1,0 +1,180 @@
+
+-- =================================================================
+-- JOURNEY APP: SYNC & FIX SCRIPT
+-- =================================================================
+-- 1. Backfill Activity Feed (History)
+-- 2. Recalculate and Fix User XP (Points)
+-- =================================================================
+
+BEGIN;
+
+-- -----------------------------------------------------------------
+-- PART 1: BACKFILL ACTIVITY FEED
+-- -----------------------------------------------------------------
+
+-- 1A. Sync 'Join' Events (if missing)
+INSERT INTO public.activity_feed (user_id, username, avatar, activity_type, details, created_at)
+SELECT 
+    id, 
+    username, 
+    avatar, 
+    'join', 
+    '{"method": "early_access"}'::jsonb, 
+    COALESCE(joined_date::timestamptz, now())
+FROM public.users u
+WHERE NOT EXISTS (
+    SELECT 1 FROM public.activity_feed af 
+    WHERE af.user_id = u.id AND af.activity_type = 'join'
+);
+
+-- 1B. Sync 'Badges' (if missing)
+-- Unnest the badges array to create individual rows
+INSERT INTO public.activity_feed (user_id, username, avatar, activity_type, details, created_at)
+SELECT 
+    u.id, 
+    u.username, 
+    u.avatar, 
+    'badge', 
+    jsonb_build_object('name', b.badge_id, 'icon', '🎖️'), 
+    now()
+FROM public.users u, unnest(u.badges) as b(badge_id)
+WHERE NOT EXISTS (
+    SELECT 1 FROM public.activity_feed af 
+    WHERE af.user_id = u.id 
+    AND af.activity_type = 'badge' 
+    AND af.details->>'name' = b.badge_id
+);
+
+-- 1C. Sync 'Achievements' (if missing)
+-- We map known achievement IDs to titles/XP for the feed details
+WITH achievement_map (id, title, icon, xp) AS (
+    VALUES 
+    ('first_step', 'First Step', '🦶', 100),
+    ('identity_found', 'Born Again', '👶', 150),
+    ('prayer_warrior', 'Prayer Warrior', '🙏', 300),
+    ('scripture_hunter', 'Scripture Hunter', '🔍', 1000),
+    ('david_complete', 'Heart of a King', '👑', 1500),
+    ('devoted', 'Devoted', '📖', 50),
+    ('plan_starter', 'Planner', '📅', 100),
+    ('plan_finisher', 'Finisher', '🏁', 500),
+    ('socialite', 'Fellowship', '💬', 50),
+    ('encourager', 'Encourager', '❤️', 200),
+    ('evangelist', 'Evangelist', '📢', 300),
+    ('divine_architect', 'Divine Architect', '🎨', 150),
+    ('high_score', 'Legend', '🏆', 500),
+    ('master_legend', 'Ascended', '🌟', 2500),
+    ('scholar', 'Scholar', '📜', 50)
+)
+INSERT INTO public.activity_feed (user_id, username, avatar, activity_type, details, created_at)
+SELECT 
+    ua.user_id,
+    u.username,
+    u.avatar,
+    'achievement',
+    jsonb_build_object('title', am.title, 'icon', am.icon, 'reward', am.xp),
+    now()
+FROM public.unlocked_achievements ua
+JOIN public.users u ON ua.user_id = u.id
+JOIN achievement_map am ON ua.achievement_id = am.id
+WHERE NOT EXISTS (
+    SELECT 1 FROM public.activity_feed af 
+    WHERE af.user_id = ua.user_id 
+    AND af.activity_type = 'achievement' 
+    AND af.details->>'title' = am.title
+);
+
+-- 1D. Sync 'Level Up' Events (Approximation)
+-- If a user is level X, we insert a generic "Reached Level X" event if no level event exists
+INSERT INTO public.activity_feed (user_id, username, avatar, activity_type, details, created_at)
+SELECT 
+    up.user_id,
+    u.username,
+    u.avatar,
+    'levelup',
+    jsonb_build_object('level', up.level_id, 'title', 'Ascended', 'game_id', up.game_id),
+    now()
+FROM public.user_progress up
+JOIN public.users u ON up.user_id = u.id
+WHERE up.level_id > 1
+AND NOT EXISTS (
+    SELECT 1 FROM public.activity_feed af 
+    WHERE af.user_id = up.user_id 
+    AND af.activity_type = 'levelup' 
+    AND (af.details->>'level')::int = up.level_id
+);
+
+-- -----------------------------------------------------------------
+-- PART 2: RECALCULATE POINTS (SAFE UPDATE)
+-- -----------------------------------------------------------------
+
+-- Create a temporary table to calculate expected scores
+CREATE TEMP TABLE calculated_scores AS
+SELECT 
+    u.id as user_id,
+    (
+        -- 1. XP from Achievements
+        COALESCE((
+            SELECT SUM(am.xp)
+            FROM public.unlocked_achievements ua
+            JOIN (VALUES 
+                ('first_step', 100), ('identity_found', 150), ('prayer_warrior', 300),
+                ('scripture_hunter', 1000), ('david_complete', 1500), ('devoted', 50),
+                ('plan_starter', 100), ('plan_finisher', 500), ('socialite', 50),
+                ('encourager', 200), ('evangelist', 300), ('divine_architect', 150),
+                ('high_score', 500), ('master_legend', 2500), ('scholar', 50),
+                ('activity_lectio', 100), ('activity_mapping', 100), ('activity_walk', 100), ('activity_hunt', 100)
+            ) AS am(id, xp) ON ua.achievement_id = am.id
+            WHERE ua.user_id = u.id
+        ), 0)
+        +
+        -- 2. XP from Collected Verses (Assume 20 XP per verse)
+        COALESCE((
+            SELECT COUNT(*) * 20 
+            FROM public.collected_verses cv 
+            WHERE cv.user_id = u.id
+        ), 0)
+        +
+        -- 3. XP from Game Progress (Levels)
+        -- Logic: Sum of (100 + (Level * 25)) for every level CLEARED. 
+        -- If level_id is 5, they cleared 1,2,3,4.
+        COALESCE((
+            SELECT SUM(
+                -- Arithmetic series sum formula for levels 1 to (level_id - 1)
+                -- Base 100 per level + 25 incremental
+                (100 * (up.level_id - 1)) + (25 * (up.level_id - 1) * up.level_id / 2)
+            )
+            FROM public.user_progress up
+            WHERE up.user_id = u.id
+        ), 0)
+        +
+        -- 4. XP from Referrals (500 XP each)
+        (COALESCE(u.referrals_count, 0) * 500)
+        +
+        -- 5. XP from Social Interactions (Assume ~10 XP avg)
+        COALESCE((
+            SELECT COUNT(*) * 10
+            FROM public.social_interactions si
+            WHERE si.user_id = u.id
+        ), 0)
+    ) as calculated_total
+FROM public.users u;
+
+-- Perform the update
+-- Only update if calculated score is HIGHER than current score
+-- This protects against removing points that were spent (Avatar Studio/Broadcasts)
+-- but ensures users get credit for missing/lost points.
+UPDATE public.users u
+SET total_points = cs.calculated_total
+FROM calculated_scores cs
+WHERE u.id = cs.user_id
+AND cs.calculated_total > u.total_points;
+
+-- Clean up
+DROP TABLE calculated_scores;
+
+COMMIT;
+
+-- -----------------------------------------------------------------
+-- VERIFICATION
+-- -----------------------------------------------------------------
+SELECT count(*) as activity_log_count FROM public.activity_feed;

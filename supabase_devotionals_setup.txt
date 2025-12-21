@@ -1,0 +1,29 @@
+
+-- 1. Daily Devotionals Cache
+CREATE TABLE IF NOT EXISTS public.daily_devotionals (
+    day date PRIMARY KEY,
+    title text NOT NULL,
+    scripture text NOT NULL,
+    content text NOT NULL,
+    prayer text NOT NULL,
+    image_prompt text NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- 2. User Completion Tracking (XP)
+CREATE TABLE IF NOT EXISTS public.user_devotional_completions (
+    user_id uuid REFERENCES public.users(id) ON DELETE CASCADE,
+    day date,
+    completed_at timestamp with time zone DEFAULT now(),
+    PRIMARY KEY (user_id, day)
+);
+
+-- RLS
+ALTER TABLE public.daily_devotionals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_devotional_completions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Public Read Devotionals" ON public.daily_devotionals FOR SELECT USING (true);
+CREATE POLICY "Auth Insert Devotionals" ON public.daily_devotionals FOR INSERT TO authenticated WITH CHECK (true);
+
+CREATE POLICY "Users See Own Completions" ON public.user_devotional_completions FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Users Track Own Completion" ON public.user_devotional_completions FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
