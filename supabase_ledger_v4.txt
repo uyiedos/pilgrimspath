@@ -1,0 +1,54 @@
+
+-- =================================================================
+-- JOURNEY APP: ENHANCED LEDGER RPC (V4)
+-- Supports filtering by type groups and joins avatar details.
+-- =================================================================
+
+BEGIN;
+
+CREATE OR REPLACE FUNCTION get_ledger_entries(p_filter text DEFAULT 'all', p_limit int DEFAULT 50)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_txs jsonb;
+BEGIN
+    SELECT jsonb_agg(t) INTO v_txs FROM (
+        SELECT 
+            tx.id, tx.amount, tx.type, tx.created_at, tx.metadata,
+            u_send.username as sender_name,
+            u_send.avatar as sender_avatar,
+            u_recv.username as receiver_name,
+            u_recv.avatar as receiver_avatar,
+            -- Enriched Artifact Data (if available via metadata)
+            ah.avatar_url as artifact_image,
+            ah.collection_name as artifact_name
+        FROM public.transactions tx
+        LEFT JOIN public.users u_send ON tx.sender_id = u_send.id
+        LEFT JOIN public.users u_recv ON tx.receiver_id = u_recv.id
+        -- Safe Join for Artifacts: Check if artifact_id exists in metadata and is a string
+        LEFT JOIN public.avatar_history ah ON 
+            tx.metadata ? 'artifact_id' AND 
+            (tx.metadata->>'artifact_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') AND
+            ah.id = (tx.metadata->>'artifact_id')::uuid
+        WHERE 
+            CASE 
+                WHEN p_filter = 'all' THEN true
+                WHEN p_filter = 'forge' THEN tx.type IN ('forge', 'forge_creation')
+                WHEN p_filter = 'burn' THEN tx.type = 'burn'
+                WHEN p_filter = 'sale' THEN tx.type = 'sale'
+                WHEN p_filter = 'reward' THEN tx.type IN ('reward', 'achievement', 'staking_reward')
+                WHEN p_filter = 'stake' THEN tx.type IN ('stake', 'staking_fee', 'staking_reward')
+                WHEN p_filter = 'tithe' THEN tx.type IN ('tithe', 'giveaway_fee', 'giveaway_entry', 'giveaway_tax')
+                ELSE tx.type = p_filter
+            END
+        ORDER BY tx.created_at DESC
+        LIMIT p_limit
+    ) t;
+
+    RETURN COALESCE(v_txs, '[]'::jsonb);
+END;
+$$;
+
+COMMIT;

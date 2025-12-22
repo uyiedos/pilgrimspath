@@ -1,0 +1,152 @@
+
+-- =================================================================
+-- JOURNEY APP: STATISTICAL SYNC & POINT RECOVERY (v10.1)
+-- "The Book of Life Audit & Badge Allocation"
+-- =================================================================
+
+BEGIN;
+
+-- 1. FIX DUPLICATE ACHIEVEMENTS (The "29/22" Bug)
+-- Delete duplicate rows, keeping the oldest one
+DELETE FROM public.unlocked_achievements a
+USING public.unlocked_achievements b
+WHERE a.id > b.id 
+AND a.user_id = b.user_id 
+AND a.achievement_id = b.achievement_id;
+
+-- Add Constraint to prevent future duplicates
+ALTER TABLE public.unlocked_achievements 
+DROP CONSTRAINT IF EXISTS unique_user_achievement;
+
+ALTER TABLE public.unlocked_achievements 
+ADD CONSTRAINT unique_user_achievement UNIQUE (user_id, achievement_id);
+
+-- 2. SYNC REFERRAL COUNTS
+UPDATE public.users u
+SET referrals_count = (
+    SELECT count(*) 
+    FROM public.users ref 
+    WHERE ref.referred_by = u.referral_code
+);
+
+-- 3. AUTO-UNLOCK ACHIEVEMENTS (Retroactive Awards)
+-- A. "Apostle" (3 Referrals)
+INSERT INTO public.unlocked_achievements (user_id, achievement_id)
+SELECT id, 'referral_3' FROM public.users WHERE referrals_count >= 3
+ON CONFLICT DO NOTHING;
+
+-- B. "Scripture Hunter" (10 Verses)
+INSERT INTO public.unlocked_achievements (user_id, achievement_id)
+SELECT user_id, 'scripture_hunter' FROM public.collected_verses GROUP BY user_id HAVING count(*) >= 10
+ON CONFLICT DO NOTHING;
+
+-- C. "Scholar" (50 Verses)
+INSERT INTO public.unlocked_achievements (user_id, achievement_id)
+SELECT user_id, 'verses_50' FROM public.collected_verses GROUP BY user_id HAVING count(*) >= 50
+ON CONFLICT DO NOTHING;
+
+-- D. "Disciple" (Level 5)
+INSERT INTO public.unlocked_achievements (user_id, achievement_id)
+SELECT user_id, 'level_5' FROM public.user_progress WHERE level_id >= 5
+ON CONFLICT DO NOTHING;
+
+-- 4. AUTO-ALLOCATE BADGES (Sync Activities to Badges)
+-- Ensure users have the badges corresponding to their stats in the DB array
+
+-- A. Scholar Badge (>50 Verses)
+UPDATE public.users
+SET badges = array_append(badges, 'scholar')
+WHERE id IN (SELECT user_id FROM public.collected_verses GROUP BY user_id HAVING count(*) >= 50)
+AND NOT ('scholar' = ANY(badges));
+
+-- B. Prayer Warrior (>20 Verses)
+UPDATE public.users
+SET badges = array_append(badges, 'prayer')
+WHERE id IN (SELECT user_id FROM public.collected_verses GROUP BY user_id HAVING count(*) >= 20)
+AND NOT ('prayer' = ANY(badges));
+
+-- C. Student (>5 Journal Entries)
+UPDATE public.users
+SET badges = array_append(badges, 'student')
+WHERE id IN (SELECT user_id FROM public.journal_entries GROUP BY user_id HAVING count(*) >= 5)
+AND NOT ('student' = ANY(badges));
+
+-- 5. THE GREAT AUDIT (Point Recalculation)
+DO $$
+DECLARE
+    r record;
+    v_xp_referrals bigint;
+    v_xp_verses bigint;
+    v_xp_journal bigint;
+    v_xp_levels bigint;
+    v_xp_achievements bigint;
+    v_xp_devotionals bigint;
+    v_lifetime_earned bigint;
+    v_asset_value bigint;
+    v_min_balance bigint;
+BEGIN
+    FOR r IN SELECT id, total_points FROM public.users LOOP
+        
+        -- 1. Referrals (500 XP each)
+        SELECT COALESCE(referrals_count * 500, 0) INTO v_xp_referrals 
+        FROM public.users WHERE id = r.id;
+
+        -- 2. Verses (20 XP each)
+        SELECT count(*) * 20 INTO v_xp_verses 
+        FROM public.collected_verses WHERE user_id = r.id;
+
+        -- 3. Journal Entries (15 XP each)
+        SELECT count(*) * 15 INTO v_xp_journal 
+        FROM public.journal_entries WHERE user_id = r.id;
+
+        -- 4. Devotionals (50 XP each)
+        SELECT count(*) * 50 INTO v_xp_devotionals 
+        FROM public.user_devotional_completions WHERE user_id = r.id;
+
+        -- 5. Game Levels
+        SELECT COALESCE(SUM(
+            (100 * (level_id - 1)) + (25 * (level_id - 1) * level_id / 2)
+        ), 0) INTO v_xp_levels
+        FROM public.user_progress WHERE user_id = r.id;
+
+        -- 6. Achievements
+        SELECT COALESCE(SUM(
+            CASE 
+                WHEN achievement_id = 'first_step' THEN 100
+                WHEN achievement_id = 'identity_found' THEN 150
+                WHEN achievement_id = 'prayer_warrior' THEN 300
+                WHEN achievement_id = 'scripture_hunter' THEN 1000
+                WHEN achievement_id = 'verses_50' THEN 5000
+                WHEN achievement_id = 'david_complete' THEN 1500
+                WHEN achievement_id = 'referral_3' THEN 3000
+                WHEN achievement_id = 'level_5' THEN 1500
+                WHEN achievement_id = 'master_legend' THEN 2500
+                WHEN achievement_id = 'high_score' THEN 500
+                ELSE 50 
+            END
+        ), 0) INTO v_xp_achievements
+        FROM public.unlocked_achievements WHERE user_id = r.id;
+
+        -- TOTAL LIFETIME EARNINGS
+        v_lifetime_earned := v_xp_referrals + v_xp_verses + v_xp_journal + v_xp_levels + v_xp_achievements + v_xp_devotionals;
+
+        -- ASSET VALUE
+        SELECT COALESCE(SUM(attached_xp), 0) INTO v_asset_value 
+        FROM public.avatar_history WHERE user_id = r.id;
+
+        v_min_balance := v_lifetime_earned - v_asset_value;
+
+        -- UPDATE IF DISCREPANCY IS LARGE
+        IF r.total_points < v_min_balance THEN
+            UPDATE public.users 
+            SET total_points = v_min_balance 
+            WHERE id = r.id;
+            
+            INSERT INTO public.activity_feed (user_id, activity_type, details)
+            VALUES (r.id, 'achievement', jsonb_build_object('title', 'Divine Restoration', 'icon', '⚖️', 'reward', (v_min_balance - r.total_points)));
+        END IF;
+
+    END LOOP;
+END $$;
+
+COMMIT;

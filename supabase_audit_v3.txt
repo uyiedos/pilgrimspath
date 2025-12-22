@@ -1,0 +1,200 @@
+
+-- =================================================================
+-- JOURNEY APP: THE GREAT AUDIT V3 (Data Integrity & Recalculation)
+-- 1. Syncs Referral Counts
+-- 2. Backfills Missing Achievements
+-- 3. Syncs Badges from Activity
+-- 4. Recalculates Total XP based on verified Ledger tables
+-- =================================================================
+
+BEGIN;
+
+-- -----------------------------------------------------------------
+-- 1. SYNC REFERRAL COUNTS
+-- Counts users where 'referred_by' matches this user's 'referral_code'
+-- -----------------------------------------------------------------
+UPDATE public.users u
+SET referrals_count = (
+    SELECT count(*) 
+    FROM public.users ref 
+    WHERE ref.referred_by = u.referral_code 
+    AND u.referral_code IS NOT NULL
+);
+
+-- -----------------------------------------------------------------
+-- 2. ACHIEVEMENT BACKFILL
+-- Fetches from specified source tables: collected_verses, user_progress, etc.
+-- -----------------------------------------------------------------
+
+-- A. "Scripture Hunter" (10 Verses) -> collected_verses
+INSERT INTO public.unlocked_achievements (user_id, achievement_id)
+SELECT user_id, 'scripture_hunter' 
+FROM public.collected_verses 
+GROUP BY user_id 
+HAVING count(*) >= 10
+ON CONFLICT DO NOTHING;
+
+-- B. "Scholar" (50 Verses) -> collected_verses
+INSERT INTO public.unlocked_achievements (user_id, achievement_id)
+SELECT user_id, 'scholar' 
+FROM public.collected_verses 
+GROUP BY user_id 
+HAVING count(*) >= 50
+ON CONFLICT DO NOTHING;
+
+-- C. "Apostle" (3 Referrals) -> users.referrals_count
+INSERT INTO public.unlocked_achievements (user_id, achievement_id)
+SELECT id, 'referral_3' 
+FROM public.users 
+WHERE referrals_count >= 3
+ON CONFLICT DO NOTHING;
+
+-- D. "Disciple" (Level 5) -> user_progress
+INSERT INTO public.unlocked_achievements (user_id, achievement_id)
+SELECT user_id, 'level_5' 
+FROM public.user_progress 
+WHERE level_id >= 5
+ON CONFLICT DO NOTHING;
+
+-- E. "Shepherd" (Level 10) -> user_progress
+INSERT INTO public.unlocked_achievements (user_id, achievement_id)
+SELECT user_id, 'level_10' 
+FROM public.user_progress 
+WHERE level_id >= 10
+ON CONFLICT DO NOTHING;
+
+-- F. "Student" (5 Journal Entries) -> journal_entries
+-- Note: There isn't a standard 'student' achievement ID in code, usually a badge, but good to have logic.
+-- Logic applied to Badge section below.
+
+-- -----------------------------------------------------------------
+-- 3. BADGE SYNC
+-- Ensures 'badges' array in 'users' table matches stats
+-- -----------------------------------------------------------------
+
+-- A. "Scholar" Badge (50 Verses)
+UPDATE public.users u
+SET badges = array_append(badges, 'scholar')
+WHERE id IN (SELECT user_id FROM public.collected_verses GROUP BY user_id HAVING count(*) >= 50)
+AND NOT ('scholar' = ANY(badges));
+
+-- B. "Prayer Warrior" Badge (20 Verses)
+UPDATE public.users u
+SET badges = array_append(badges, 'prayer')
+WHERE id IN (SELECT user_id FROM public.collected_verses GROUP BY user_id HAVING count(*) >= 20)
+AND NOT ('prayer' = ANY(badges));
+
+-- C. "Student" Badge (5 Journal Entries) -> journal_entries
+UPDATE public.users u
+SET badges = array_append(badges, 'student')
+WHERE id IN (SELECT user_id FROM public.journal_entries GROUP BY user_id HAVING count(*) >= 5)
+AND NOT ('student' = ANY(badges));
+
+-- D. "Blacksmith" Badge (10 Forged Items) -> avatar_history
+UPDATE public.users u
+SET badges = array_append(badges, 'blacksmith')
+WHERE id IN (SELECT user_id FROM public.avatar_history GROUP BY user_id HAVING count(*) >= 10)
+AND NOT ('blacksmith' = ANY(badges));
+
+-- -----------------------------------------------------------------
+-- 4. XP AUDIT & RECALCULATION
+-- Calculates "Verified Earnings" - "Verified Spend"
+-- -----------------------------------------------------------------
+
+DO $$
+DECLARE
+    r record;
+    v_xp_levels bigint;
+    v_xp_achievements bigint;
+    v_xp_devotionals bigint;
+    v_xp_verses bigint;
+    v_xp_referrals bigint;
+    v_xp_journal bigint;
+    v_xp_donations bigint;
+    v_xp_sales bigint;
+    
+    v_total_earned bigint;
+    v_total_spent bigint;
+    
+    v_calculated_balance bigint;
+    v_diff bigint;
+BEGIN
+    FOR r IN SELECT id, total_points FROM public.users LOOP
+        
+        -- === EARNINGS ===
+        
+        -- 1. Levels (Base 100 + 25 inc per level cleared) -> user_progress
+        SELECT COALESCE(SUM(
+            (100 * (level_id - 1)) + (25 * (level_id - 1) * level_id / 2)
+        ), 0) INTO v_xp_levels
+        FROM public.user_progress WHERE user_id = r.id;
+
+        -- 2. Achievements (Sum of rewards) -> unlocked_achievements
+        SELECT COALESCE(SUM(
+            CASE 
+                WHEN achievement_id = 'first_step' THEN 100
+                WHEN achievement_id = 'identity_found' THEN 150
+                WHEN achievement_id = 'prayer_warrior' THEN 300
+                WHEN achievement_id = 'scripture_hunter' THEN 1000
+                WHEN achievement_id = 'scholar' THEN 50
+                WHEN achievement_id = 'david_complete' THEN 1500
+                WHEN achievement_id = 'referral_3' THEN 3000
+                ELSE 50 
+            END
+        ), 0) INTO v_xp_achievements
+        FROM public.unlocked_achievements WHERE user_id = r.id;
+
+        -- 3. Devotionals (50 XP each) -> user_devotional_completions
+        SELECT count(*) * 50 INTO v_xp_devotionals 
+        FROM public.user_devotional_completions WHERE user_id = r.id;
+
+        -- 4. Verses (20 XP each) -> collected_verses
+        SELECT count(*) * 20 INTO v_xp_verses 
+        FROM public.collected_verses WHERE user_id = r.id;
+
+        -- 5. Referrals (500 XP each) -> users
+        SELECT COALESCE(referrals_count * 500, 0) INTO v_xp_referrals 
+        FROM public.users WHERE id = r.id;
+
+        -- 6. Journal (15 XP each) -> journal_entries
+        SELECT count(*) * 15 INTO v_xp_journal 
+        FROM public.journal_entries WHERE user_id = r.id;
+
+        -- 7. Donations (From transactions)
+        SELECT COALESCE(SUM(amount), 0) INTO v_xp_donations
+        FROM public.transactions WHERE receiver_id = r.id AND type = 'donation_reward';
+
+        -- 8. Market Sales (From transactions)
+        SELECT COALESCE(SUM(amount), 0) INTO v_xp_sales
+        FROM public.transactions WHERE receiver_id = r.id AND type = 'sale';
+
+        v_total_earned := v_xp_levels + v_xp_achievements + v_xp_devotionals + v_xp_verses + v_xp_referrals + v_xp_journal + v_xp_donations + v_xp_sales;
+
+        -- === SPENDING (Ledger Check) ===
+        -- Uses transactions table to find debits
+        SELECT COALESCE(SUM(amount), 0) INTO v_total_spent
+        FROM public.transactions 
+        WHERE sender_id = r.id AND type IN ('forge', 'forge_creation', 'sale', 'giveaway_fee', 'giveaway_entry', 'raffle_entry', 'staking_fee', 'broadcast_fee');
+
+        -- === CALCULATION ===
+        v_calculated_balance := GREATEST(0, v_total_earned - v_total_spent);
+
+        -- Update Logic:
+        -- Only update if the calculated balance is HIGHER (indicating missed points).
+        -- We ignore if current is higher (to preserve legacy points or manual grants not in ledger).
+        IF v_calculated_balance > (r.total_points + 50) THEN
+            v_diff := v_calculated_balance - r.total_points;
+            
+            UPDATE public.users 
+            SET total_points = v_calculated_balance 
+            WHERE id = r.id;
+
+            -- Log the correction
+            INSERT INTO public.activity_feed (user_id, activity_type, details)
+            VALUES (r.id, 'achievement', jsonb_build_object('title', 'Divine Audit', 'icon', '⚖️', 'reward', v_diff, 'message', 'Points restored.'));
+        END IF;
+
+    END LOOP;
+END $$;
+
+COMMIT;

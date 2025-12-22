@@ -1,0 +1,117 @@
+
+-- =================================================================
+-- THE JOURNEY: COMPREHENSIVE SYNC (v9.7 - FIXED)
+-- Ensures Quests, Points, and All Features are Live
+-- Handles existing tables gracefully.
+-- =================================================================
+
+BEGIN;
+
+-- 1. POINT SYSTEM CORE (RPC)
+CREATE OR REPLACE FUNCTION increment_points(p_user_id uuid, p_amount int)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE public.users 
+  SET total_points = total_points + p_amount,
+      daily_points_earned = daily_points_earned + p_amount
+  WHERE id = p_user_id;
+END;
+$$;
+
+-- 2. QUESTS & MISSIONS SYSTEM
+-- Safely create table
+CREATE TABLE IF NOT EXISTS public.missions (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  title text NOT NULL,
+  description text,
+  type text NOT NULL, -- 'Daily', 'Weekly', 'Career'
+  reward_xp int DEFAULT 100,
+  icon text DEFAULT '📜',
+  action_key text,
+  target_count int DEFAULT 1,
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- Safely add UNIQUE constraint if it doesn't exist
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'missions_title_key') THEN
+        ALTER TABLE public.missions ADD CONSTRAINT missions_title_key UNIQUE (title);
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS public.user_mission_claims (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  mission_id uuid REFERENCES public.missions(id) NOT NULL,
+  claimed_at timestamp with time zone DEFAULT now(),
+  reset_key text
+);
+
+-- RLS
+ALTER TABLE public.missions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_mission_claims ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read Missions" ON public.missions;
+CREATE POLICY "Public Read Missions" ON public.missions FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Users Manage Claims" ON public.user_mission_claims;
+CREATE POLICY "Users Manage Claims" ON public.user_mission_claims FOR ALL USING (auth.uid() = user_id);
+
+-- SEED MISSIONS (Now safe due to unique constraint check above)
+INSERT INTO public.missions (title, description, type, reward_xp, icon, action_key, target_count) VALUES
+('Morning Manna', 'Read today''s Daily Devotional.', 'Daily', 50, '🍞', 'read_devotional', 1),
+('Fellowship Voice', 'Post a message in the Global Chat.', 'Daily', 25, '💬', 'chat', 1),
+('Seeker of Truth', 'Use the Browser to search for biblical wisdom.', 'Daily', 30, '🔍', 'browser_search', 1),
+('Spirit Mirror', 'View your Profile or adjust your Archetype.', 'Daily', 15, '🛡️', 'check_profile', 1),
+('Prayer Warrior', 'Visit the Prayer Room.', 'Daily', 40, '🕯️', 'visit_prayer', 1),
+('Master Builder', 'Forge 3 new Artifacts in the Sacred Forge.', 'Weekly', 500, '⚒️', 'forge', 3),
+('Faithful Tither', 'Contribute XP to a Community Treasury.', 'Weekly', 300, '🪙', 'tithe', 1),
+('Evangelist', 'Share 3 items (Devotionals or Artifacts).', 'Weekly', 250, '📢', 'share', 3),
+('Market Tycoon', 'Purchase 1 item from the Marketplace.', 'Weekly', 400, '🛒', 'market_buy', 1),
+('Hope Dealer', 'Enter 2 Raffles or Giveaways.', 'Weekly', 200, '🎟️', 'enter_raffle', 2),
+('First Steps', 'Reach Level 2 (Seeker).', 'Career', 500, '🦶', 'level_2', 1),
+('Disciple', 'Reach Level 5 (Believer).', 'Career', 1500, '✝️', 'level_5', 1),
+('Scripture Hunter', 'Collect 10 Revealed Verses from gameplay.', 'Career', 1000, '📜', 'verses_10', 10),
+('Divine Architect', 'Forge 5 Items in the Studio.', 'Career', 2000, '🎨', 'forge_5', 5),
+('Community Pillar', 'Join a Community Ministry.', 'Career', 300, '🔥', 'join_community', 1),
+('Chosen Soul', 'Win a Raffle or Giveaway.', 'Career', 2500, '👑', 'win_giveaway', 1)
+ON CONFLICT (title) DO NOTHING;
+
+-- 3. ENSURE ALL TABLES EXIST
+-- Journey TV
+CREATE TABLE IF NOT EXISTS public.videos (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  username text, avatar text, title text NOT NULL, youtube_id text NOT NULL, 
+  views int DEFAULT 0, likes int DEFAULT 0, category text DEFAULT 'General',
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- Fellowship
+CREATE TABLE IF NOT EXISTS public.communities (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  name text NOT NULL, type text NOT NULL, leader_id uuid REFERENCES public.users(id) NOT NULL,
+  member_count int DEFAULT 1, treasury_balance bigint DEFAULT 0, level int DEFAULT 1,
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- Market
+CREATE TABLE IF NOT EXISTS public.marketplace_listings (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    avatar_id uuid REFERENCES public.avatar_history(id) NOT NULL,
+    seller_id uuid REFERENCES public.users(id) NOT NULL,
+    price bigint NOT NULL, status text DEFAULT 'active',
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- 4. PERMISSIONS REFRESH
+GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO postgres, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO postgres, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated;
+
+COMMIT;

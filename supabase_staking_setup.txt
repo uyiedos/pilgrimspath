@@ -1,0 +1,223 @@
+
+-- =================================================================
+-- JOURNEY APP: CELESTIAL STAKING PROTOCOL
+-- =================================================================
+
+BEGIN;
+
+-- 1. STAKES TABLE
+CREATE TABLE IF NOT EXISTS public.stakes (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    amount bigint NOT NULL,
+    tier text NOT NULL, -- 'daily', 'weekly', 'monthly', 'yearly'
+    apy int NOT NULL, -- Percentage (e.g., 5, 15, 40, 100)
+    start_time timestamp with time zone DEFAULT now(),
+    lock_end_time timestamp with time zone,
+    last_claim_time timestamp with time zone DEFAULT now(),
+    status text DEFAULT 'active', -- 'active', 'unstaked'
+    total_earned bigint DEFAULT 0,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- 2. INDEXES & RLS
+CREATE INDEX IF NOT EXISTS stakes_user_id_idx ON public.stakes(user_id);
+CREATE INDEX IF NOT EXISTS stakes_status_idx ON public.stakes(status);
+
+ALTER TABLE public.stakes ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users View Own Stakes" ON public.stakes;
+CREATE POLICY "Users View Own Stakes" ON public.stakes FOR SELECT USING (auth.uid() = user_id);
+
+-- 3. UPDATED WEALTH CALCULATION (Include Staked XP in Net Worth)
+CREATE OR REPLACE FUNCTION get_player_wealth(p_user_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_liquid_xp bigint;
+    v_asset_xp bigint;
+    v_staked_xp bigint;
+BEGIN
+    -- Get Liquid
+    SELECT total_points INTO v_liquid_xp FROM public.users WHERE id = p_user_id;
+    
+    -- Get Assets Sum (Inventory)
+    SELECT COALESCE(SUM(attached_xp), 0) INTO v_asset_xp 
+    FROM public.avatar_history 
+    WHERE user_id = p_user_id;
+
+    -- Get Staked Sum (Active Principal)
+    SELECT COALESCE(SUM(amount), 0) INTO v_staked_xp
+    FROM public.stakes
+    WHERE user_id = p_user_id AND status = 'active';
+
+    RETURN jsonb_build_object(
+        'liquid_xp', COALESCE(v_liquid_xp, 0),
+        'asset_xp', v_asset_xp,
+        'staked_xp', v_staked_xp,
+        'net_worth', (COALESCE(v_liquid_xp, 0) + v_asset_xp + v_staked_xp)
+    );
+END;
+$$;
+
+-- 4. RPC: STAKE XP (Deposit)
+CREATE OR REPLACE FUNCTION stake_xp(p_user_id uuid, p_amount int, p_tier text)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_fee int := 100;
+    v_total_cost int;
+    v_user_balance bigint;
+    v_apy int;
+    v_lock_seconds int;
+    v_lock_end timestamp with time zone;
+    v_stake_id uuid;
+BEGIN
+    v_total_cost := p_amount + v_fee;
+
+    -- Determine APY & Lockup based on Tier
+    CASE p_tier
+        WHEN 'daily' THEN
+            v_apy := 5; v_lock_seconds := 0; -- No lock, 5% APY
+        WHEN 'weekly' THEN
+            v_apy := 15; v_lock_seconds := 604800; -- 7 days, 15% APY
+        WHEN 'monthly' THEN
+            v_apy := 40; v_lock_seconds := 2592000; -- 30 days, 40% APY
+        WHEN 'yearly' THEN
+            v_apy := 100; v_lock_seconds := 31536000; -- 365 days, 100% APY
+        ELSE
+            RAISE EXCEPTION 'Invalid staking tier';
+    END CASE;
+
+    -- Calculate Lock End
+    v_lock_end := now() + (v_lock_seconds || ' seconds')::interval;
+
+    -- Check Balance
+    SELECT total_points INTO v_user_balance FROM public.users WHERE id = p_user_id;
+    IF v_user_balance < v_total_cost THEN
+        RAISE EXCEPTION 'Insufficient Liquid XP (Amount + 100 XP Fee required)';
+    END IF;
+
+    -- Transact
+    -- 1. Deduct from User
+    UPDATE public.users SET total_points = total_points - v_total_cost WHERE id = p_user_id;
+    
+    -- 2. Add Fee to Treasury Balance (Custody holds the Principal implicitly in the system, but we track fees separately)
+    -- NOTE: In this economy model, "Treasury" balance often represents system revenue. 
+    -- The principal is technically "locked in the contract" (the stakes table). 
+    -- We will add the Fee to the Treasury Revenue.
+    UPDATE public.treasury SET balance = balance + v_fee WHERE id = 1;
+
+    -- 3. Create Stake Record
+    INSERT INTO public.stakes (user_id, amount, tier, apy, lock_end_time)
+    VALUES (p_user_id, p_amount, p_tier, v_apy, v_lock_end)
+    RETURNING id INTO v_stake_id;
+
+    -- 4. Log Transaction
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_user_id, v_fee, 'staking_fee', jsonb_build_object('tier', p_tier, 'principal', p_amount));
+
+    RETURN jsonb_build_object('success', true, 'stake_id', v_stake_id);
+END;
+$$;
+
+-- 5. RPC: CLAIM REWARDS (Harvest)
+CREATE OR REPLACE FUNCTION claim_stake_rewards(p_stake_id uuid, p_user_id uuid)
+RETURNS int
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_stake record;
+    v_seconds_diff numeric;
+    v_reward numeric;
+    v_reward_int int;
+BEGIN
+    SELECT * INTO v_stake FROM public.stakes WHERE id = p_stake_id AND user_id = p_user_id AND status = 'active';
+    
+    IF NOT FOUND THEN RAISE EXCEPTION 'Stake not active or found'; END IF;
+
+    -- Calculate time elapsed in seconds
+    v_seconds_diff := EXTRACT(EPOCH FROM (now() - v_stake.last_claim_time));
+    
+    IF v_seconds_diff < 60 THEN
+        RETURN 0; -- Minimum 1 minute to claim
+    END IF;
+
+    -- Formula: Principal * (APY / 100) * (SecondsElapsed / SecondsInYear)
+    -- 31536000 seconds in a year
+    v_reward := (v_stake.amount::numeric * (v_stake.apy::numeric / 100.0) * (v_seconds_diff / 31536000.0));
+    v_reward_int := floor(v_reward)::int;
+
+    IF v_reward_int > 0 THEN
+        -- Update Stake
+        UPDATE public.stakes 
+        SET last_claim_time = now(), 
+            total_earned = total_earned + v_reward_int 
+        WHERE id = p_stake_id;
+
+        -- Pay User
+        UPDATE public.users SET total_points = total_points + v_reward_int WHERE id = p_user_id;
+
+        -- Log
+        INSERT INTO public.transactions (sender_id, receiver_id, amount, type, metadata)
+        VALUES (NULL, p_user_id, v_reward_int, 'staking_reward', jsonb_build_object('stake_id', p_stake_id));
+    END IF;
+
+    RETURN v_reward_int;
+END;
+$$;
+
+-- 6. RPC: UNSTAKE (Withdraw)
+CREATE OR REPLACE FUNCTION unstake_xp(p_stake_id uuid, p_user_id uuid)
+RETURNS int
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_stake record;
+    v_pending_reward int;
+    v_total_return int;
+BEGIN
+    SELECT * INTO v_stake FROM public.stakes WHERE id = p_stake_id AND user_id = p_user_id AND status = 'active';
+    
+    IF NOT FOUND THEN RAISE EXCEPTION 'Stake not found'; END IF;
+
+    -- Check Lock
+    IF v_stake.lock_end_time > now() THEN
+        RAISE EXCEPTION 'Stake is still locked until %', v_stake.lock_end_time;
+    END IF;
+
+    -- Claim pending rewards first (Reuse logic logic roughly)
+    -- We'll just do a final claim logic here to be atomic
+    DECLARE
+        v_seconds_diff numeric := EXTRACT(EPOCH FROM (now() - v_stake.last_claim_time));
+        v_reward numeric := (v_stake.amount::numeric * (v_stake.apy::numeric / 100.0) * (v_seconds_diff / 31536000.0));
+    BEGIN
+        v_pending_reward := floor(v_reward)::int;
+    END;
+
+    v_total_return := v_stake.amount + v_pending_reward;
+
+    -- Update Status
+    UPDATE public.stakes 
+    SET status = 'unstaked', 
+        last_claim_time = now(),
+        total_earned = total_earned + v_pending_reward
+    WHERE id = p_stake_id;
+
+    -- Return Principal + Reward
+    UPDATE public.users SET total_points = total_points + v_total_return WHERE id = p_user_id;
+
+    -- Log
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (p_user_id, 'achievement', jsonb_build_object('title', 'Vault Withdrawal', 'icon', '🏦', 'reward', v_total_return));
+
+    RETURN v_total_return;
+END;
+$$;
+
+COMMIT;

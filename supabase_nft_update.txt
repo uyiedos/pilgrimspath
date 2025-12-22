@@ -1,0 +1,27 @@
+
+-- 1. Update Avatar History for Collections
+ALTER TABLE public.avatar_history 
+ADD COLUMN IF NOT EXISTS collection_name text DEFAULT 'Genesis';
+
+-- 2. RPC for efficient Global Stats (prevents heavy client-side aggregation)
+CREATE OR REPLACE FUNCTION public.get_global_stats()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  total_users_count int;
+  total_xp_sum bigint;
+BEGIN
+  SELECT count(*) INTO total_users_count FROM public.users;
+  SELECT sum(total_points) INTO total_xp_sum FROM public.users;
+  
+  RETURN jsonb_build_object(
+    'users', total_users_count,
+    'xp', COALESCE(total_xp_sum, 0)
+  );
+END;
+$$;
+
+-- 3. Update existing history to 'Genesis' if null
+UPDATE public.avatar_history SET collection_name = 'Genesis' WHERE collection_name IS NULL;

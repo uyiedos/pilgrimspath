@@ -1,0 +1,192 @@
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>The Journey: Pilgrim's Path</title>
+    <meta name="description" content="A spiritual RPG & Sanctuary. Forge artifacts, battle sin, trade in the marketplace, and join a global fellowship of believers. v10.0 Live." />
+    <link rel="icon" type="image/png" href="https://image.pollinations.ai/prompt/pixel%20art%20cross%20icon%20gold?width=64&height=64&nologo=true" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#ca8a04" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="The Journey" />
+    <link rel="apple-touch-icon" href="https://image.pollinations.ai/prompt/pixel%20art%20cross%20icon%20gold?width=192&height=192&nologo=true" />
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://journey.app/" />
+    <meta property="og:title" content="The Journey: Pilgrim's Path v10" />
+    <meta property="og:description" content="Embark on a spiritual adventure. Navigate 9 circles of overcoming sin through biblical reflection, AI-guided storytelling, and a celestial economy." />
+    <meta property="og:image" content="https://image.pollinations.ai/prompt/pixel%20art%20ancient%20biblical%20map%20middle%20east%20parchment?width=1200&height=630&nologo=true" />
+
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image" />
+    <meta property="twitter:url" content="https://journey.app/" />
+    <meta property="twitter:title" content="The Journey: Pilgrim's Path" />
+    <meta property="twitter:description" content="Embark on a spiritual adventure. Navigate 9 circles of overcoming sin through biblical reflection. Built for the seeker." />
+    <meta property="twitter:image" content="https://image.pollinations.ai/prompt/pixel%20art%20ancient%20biblical%20map%20middle%20east%20parchment?width=1200&height=630&nologo=true" />
+    <meta name="twitter:site" content="@yourjourneyapp" />
+    <meta name="twitter:creator" content="@blackralphsol" />
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Cinzel:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+      /* Hide scrollbar for Chrome, Safari and Opera */
+      ::-webkit-scrollbar {
+        display: none;
+      }
+      /* Hide scrollbar for IE, Edge and Firefox */
+      body {
+        -ms-overflow-style: none;  /* IE and Edge */
+        scrollbar-width: none;  /* Firefox */
+        font-family: 'VT323', monospace;
+        background-color: #1a202c;
+        overscroll-behavior: none;
+      }
+      .font-retro {
+        font-family: 'Press Start 2P', cursive;
+      }
+      .font-cinzel {
+        font-family: 'Cinzel', serif;
+      }
+      .pixel-shadow {
+        box-shadow: 4px 4px 0px 0px rgba(0,0,0,0.5);
+      }
+      .pixel-shadow-sm {
+        box-shadow: 2px 2px 0px 0px rgba(0,0,0,0.5);
+      }
+      .voxel-block {
+        transition: transform 0.2s;
+      }
+      .voxel-block:hover {
+        transform: translateY(-2px);
+      }
+      
+      /* New Animations */
+      @keyframes float {
+        0% { transform: translateY(0px); }
+        50% { transform: translateY(-10px); }
+        100% { transform: translateY(0px); }
+      }
+      .animate-float {
+        animation: float 4s ease-in-out infinite;
+      }
+      
+      @keyframes glow {
+        0%, 100% { text-shadow: 0 0 5px rgba(234, 179, 8, 0.5), 0 0 10px rgba(234, 179, 8, 0.3); }
+        50% { text-shadow: 0 0 20px rgba(234, 179, 8, 0.8), 0 0 30px rgba(234, 179, 8, 0.5); }
+      }
+      .animate-glow {
+        animation: glow 2s ease-in-out infinite;
+      }
+
+      @keyframes scanline {
+        0% { transform: translateY(-100%); }
+        100% { transform: translateY(100%); }
+      }
+      .scanline-effect {
+        position: relative;
+        overflow: hidden;
+      }
+      .scanline-effect::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(to bottom, transparent 50%, rgba(255, 255, 255, 0.05) 50%);
+        background-size: 100% 4px;
+        pointer-events: none;
+      }
+
+      /* Global UI Animations */
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      .animate-fade-in {
+        animation: fadeIn 0.5s ease-out forwards;
+      }
+
+      @keyframes slideUp {
+        from { transform: translateY(20px); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+      }
+      .animate-slide-up {
+        animation: slideUp 0.6s ease-out forwards;
+      }
+      
+      @keyframes slideInRight {
+        from { transform: translateX(20px); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      .animate-slide-in {
+        animation: slideInRight 0.4s ease-out forwards;
+      }
+
+      @keyframes bounceSlow {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-10px); }
+      }
+      .animate-bounce-slow {
+        animation: bounceSlow 3s infinite ease-in-out;
+      }
+
+      @keyframes widthGrow {
+        from { width: 0; }
+        to { width: 100%; }
+      }
+      .animate-width-grow {
+        animation: widthGrow 1s ease-out forwards;
+      }
+
+      /* 3D Scene Specific Animations */
+      @keyframes float-voxel {
+        0%, 100% { transform: translateZ(0px); }
+        50% { transform: translateZ(10px); }
+      }
+      @keyframes particle-rise {
+        0% { transform: translate3d(0, 0, 0) scale(0); opacity: 0; }
+        20% { opacity: 0.8; transform: translate3d(0, 0, 20px) scale(1); }
+        100% { transform: translate3d(0, 0, 100px) scale(0); opacity: 0; }
+      }
+      @keyframes ascend-dissolve {
+        0% { opacity: 1; transform: translateZ(0) scale(1); filter: brightness(100%); }
+        50% { opacity: 0.8; transform: translateZ(40px) scale(0.8); filter: brightness(150%); }
+        100% { opacity: 0; transform: translateZ(100px) scale(0); filter: brightness(200%); }
+      }
+      @keyframes beam-appear {
+        0% { opacity: 0; transform: scaleY(0); }
+        100% { opacity: 0.4; transform: scaleY(1); }
+      }
+      .preserve-3d { transform-style: preserve-3d; }
+
+      /* Mobile optimizations */
+      .custom-scroll {
+        -webkit-overflow-scrolling: touch;
+      }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "@google/genai": "https://esm.sh/@google/genai@^1.33.0",
+    "vite": "https://esm.sh/vite@^7.2.7",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@^2.87.1",
+    "@capacitor/cli": "https://esm.sh/@capacitor/cli@^8.0.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
