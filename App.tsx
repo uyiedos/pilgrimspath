@@ -421,7 +421,7 @@ export const App: React.FC = () => {
 
       {/* MOBILE NAVIGATION BAR */}
       {!isImmersiveView && gameState.user && (
-        <nav className="md:hidden fixed bottom-0 left-0 w-full bg-black/95 backdrop-blur-xl border-t-2 border-white/10 z-[49] h-20 pb-safe flex justify-around items-center px-1 shadow-[0_-10px_40px_rgba(0,0,0,0.8)]">
+        <nav className="md:hidden fixed bottom-0 left-0 w-full bg-black/95 backdrop-blur-xl border-t-2 border-white/10 z-[60] h-20 pb-safe flex justify-around items-center px-1 shadow-[0_-10px_40px_rgba(0,0,0,0.8)]">
             {[
                 { id: AppView.LANDING, icon: '🏠', label: 'Home' },
                 { id: AppView.MAP, icon: '🗺️', label: 'Play' },
