@@ -4,7 +4,7 @@ import type { Schema } from "@google/genai";
 import { AIResponse, LevelConfig, DifficultyMode } from '../types';
 import { LanguageCode } from '../translations';
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || 'demo-key' });
 
 const responseSchema: Schema = {
   type: Type.OBJECT,
@@ -25,7 +25,20 @@ export const generateGuideResponse = async (
 ): Promise<AIResponse> => {
   const systemInstruction = `You are 'The Guide' for a biblical pilgrimage. Goal: Overcome ${level.sin} through ${level.virtue}. Respond in ${language}. Current Difficulty: ${difficulty}.`;
 
+  // Check if API key is configured
+  if (!process.env.API_KEY || process.env.API_KEY === 'your_google_ai_api_key_here') {
+    console.warn("AI Service: No valid API key configured. Using demo mode.");
+    return { 
+      text: "Welcome, pilgrim. I am your Guide on this journey of faith. To overcome " + level.sin + " through " + level.virtue + ", you must walk with intention and prayer. What spiritual challenge do you face today?", 
+      isSuccess: true 
+    };
+  }
+
   try {
+    console.log("AI Request - API Key available:", !!process.env.API_KEY);
+    console.log("AI Request - Model: gemini-1.5-flash");
+    console.log("AI Request - Message:", userMessage);
+    
     const response = await ai.models.generateContent({
       model: 'gemini-1.5-flash',
       contents: userMessage,
@@ -35,9 +48,15 @@ export const generateGuideResponse = async (
         responseSchema: responseSchema,
       }
     });
+    
+    console.log("AI Response:", response);
     return JSON.parse(response.text || "{}") as AIResponse;
   } catch (error) {
-    return { text: "The path is narrow. Keep seeking.", isSuccess: false };
+    console.error("AI Error Details:", error);
+    return { 
+      text: "The path ahead requires wisdom. Take a moment to pray and reflect on your journey. What specific guidance do you seek?", 
+      isSuccess: false 
+    };
   }
 };
 
