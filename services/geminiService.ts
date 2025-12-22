@@ -33,14 +33,37 @@ export const generateGuideResponse = async (
   Respond in ${language}. 
   Current Difficulty: ${difficulty}.
   
-  IMPORTANT: Make the player feel immersed in their character's journey. Use "you" to address them as the character, not as a modern player.`;
+  IMPORTANT: Make the player feel immersed in their character's journey. Use "you" to address them as the character, not as a modern player.
+  
+  PROGRESSION HELPERS:
+  - If player seems stuck, provide gentle hints about what they should focus on
+  - Guide them toward understanding how ${level.virtue} helps overcome ${level.sin}
+  - Reference the key verse: "${level.bibleContext.keyVerse}" when appropriate
+  - When they show understanding, reward them with scripture references
+  - Keep responses conversational and encouraging, not preachy
+  
+  INTERACTION STYLE:
+  - Ask questions to guide their thinking
+  - Share relevant biblical stories or parables
+  - Connect their struggles to the character's biblical journey
+  - Be patient and supportive in your guidance`;
 
   // Check if API key is configured
   if (!process.env.API_KEY || process.env.API_KEY === 'your_google_ai_api_key_here') {
     console.warn("AI Service: No valid API key configured. Using demo mode.");
+    
+    // Enhanced demo mode with progression hints
+    const hints = [
+      `My child ${level.bibleContext.character}, I see the weight of ${level.sin} upon your heart. Yet through ${level.virtue}, you shall find strength. Consider how ${level.bibleContext.narrativeIntro.split('.')[0]}. What aspect of ${level.virtue} resonates most with you today?`,
+      `Dear ${level.bibleContext.character}, the path to overcoming ${level.sin} begins with small steps of ${level.virtue}. Remember that even the mightiest warriors of faith started with simple trust. What small act of ${level.virtue} can you take right now?`,
+      `${level.bibleContext.character}, your struggle with ${level.sin} is not unknown to the divine. The scriptures teach us that ${level.virtue} is forged in the fires of trial. How might your current struggle be shaping you into a vessel of ${level.virtue}?`
+    ];
+    
+    const randomHint = hints[Math.floor(Math.random() * hints.length)];
+    
     return { 
-      text: `My child ${level.bibleContext.character}, I see the weight of ${level.sin} upon your heart. Yet through ${level.virtue}, you shall find strength. As you walk this path, remember that ${level.bibleContext.narrativeIntro.split('.')[0]}. What troubles your spirit today?`,
-      isSuccess: true 
+      text: randomHint,
+      isSuccess: Math.random() > 0.7 // 30% chance of success in demo mode
     };
   }
 
@@ -61,7 +84,15 @@ export const generateGuideResponse = async (
     });
     
     console.log("AI Response:", response);
-    return JSON.parse(response.text || "{}") as AIResponse;
+    const result = JSON.parse(response.text || "{}") as AIResponse;
+    
+    // Make progression easier by being more generous with success
+    if (!result.isSuccess && userMessage.toLowerCase().includes(level.virtue.toLowerCase())) {
+      result.isSuccess = true;
+      result.scriptureRef = level.bibleContext.reference;
+    }
+    
+    return result;
   } catch (error) {
     console.error("AI Error Details:", error);
     return { 

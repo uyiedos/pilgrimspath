@@ -137,7 +137,7 @@ const VoxelScene: React.FC<VoxelSceneProps> = ({ level, small = false, isComplet
     targetRotationRef.current.x = 60;
   };
 
-  // Map numbers in gridPattern to properties
+  // Map numbers in gridPattern to properties with enhanced interactions
   const getBlockProps = (code: number) => {
     switch (code) {
       // Normal path
@@ -146,25 +146,74 @@ const VoxelScene: React.FC<VoxelSceneProps> = ({ level, small = false, isComplet
         heightMult: 1, 
         zOff: 0,
         texture: pathTexture, 
-        glow: false 
+        glow: false,
+        interactive: true,
+        onClick: () => AudioSystem.playVoxelTap()
       };
-      // Accent / Objective
+      // Accent / Objective - Enhanced with pulsing glow
       case 2: return { 
         class: accentColor, 
         heightMult: 1, 
         zOff: s * 0.5, // Floats slightly
         texture: goldTexture, 
-        glow: true 
+        glow: true,
+        interactive: true,
+        onClick: () => {
+          AudioSystem.playVoxelTap();
+          // Trigger special effect
+          setDissolvedBlocks(prev => {
+            const newSet = new Set(prev);
+            // Add some random nearby blocks for chain reaction
+            for (let i = 0; i < 3; i++) {
+              const randomX = Math.floor(Math.random() * gridSize);
+              const randomY = Math.floor(Math.random() * gridSize);
+              newSet.add(`${randomX}-${randomY}`);
+            }
+            return newSet;
+          });
+        }
       };
-      // Wall / Obstacle
+      // Wall / Obstacle - Can be interacted with
       case 3: return { 
         class: 'bg-stone-700', 
         heightMult: 2.5, // Tall pillar
         zOff: 0,
         texture: stoneTexture, 
-        glow: false 
+        glow: false,
+        interactive: true,
+        onClick: () => AudioSystem.playVoxelTap()
       };
-      default: return { class: 'bg-transparent', heightMult: 0, zOff: 0, texture: '', glow: false };
+      // Special Peter block - Interactive scene element
+      case 4: return { 
+        class: 'bg-blue-600', 
+        heightMult: 1.5, 
+        zOff: s * 0.3,
+        texture: goldTexture, 
+        glow: true,
+        interactive: true,
+        isSpecial: true,
+        onClick: () => {
+          AudioSystem.playVoxelTap();
+          // Peter-specific interaction
+          console.log("Peter interaction triggered!");
+        }
+      };
+      // Special Christ block - Divine element
+      case 5: return { 
+        class: 'bg-yellow-500', 
+        heightMult: 2, 
+        zOff: s * 0.8, // Higher floating
+        texture: goldTexture, 
+        glow: true,
+        interactive: true,
+        isSpecial: true,
+        onClick: () => {
+          AudioSystem.playVoxelTap();
+          // Christ-specific interaction
+          console.log("Christ interaction triggered!");
+        }
+      };
+      default: return { class: 'bg-transparent', heightMult: 0, zOff: 0, texture: '', glow: false, interactive: false };
     }
   };
 
@@ -178,8 +227,8 @@ const VoxelScene: React.FC<VoxelSceneProps> = ({ level, small = false, isComplet
     color: Math.random() > 0.6 ? 'bg-yellow-200' : 'bg-blue-200'
   })));
 
-  // CSS for a single 3D Cube
-  const Cube = ({ x, y, z, size, colorClass, heightMult, glow, texture, isCharacter = false }: any) => {
+  // CSS for a single 3D Cube with enhanced interactions
+  const Cube = ({ x, y, z, size, colorClass, heightMult, glow, texture, isCharacter = false, interactive = false, onClick, isSpecial = false }: any) => {
     const h = size * heightMult;
     const transform = `translate3d(${x}px, ${y}px, ${z}px)`;
     
@@ -198,16 +247,17 @@ const VoxelScene: React.FC<VoxelSceneProps> = ({ level, small = false, isComplet
 
     return (
       <div 
-        className={`absolute preserve-3d will-change-transform ${glow ? 'animate-float-voxel' : ''}`}
+        className={`absolute preserve-3d will-change-transform ${glow ? 'animate-float-voxel' : ''} ${interactive ? 'cursor-pointer hover:brightness-110 transition-all duration-200' : ''} ${isSpecial ? 'ring-2 ring-yellow-400/50 ring-offset-2 ring-offset-transparent' : ''}`}
         style={{ 
           left: '50%',
           top: '50%',
           transform, 
           width: size, 
           height: size,
-          transition: 'transform 0.5s ease-out'
+          transition: 'transform 0.5s ease-out, filter 0.2s ease-out'
         }}
         onMouseEnter={() => !small && AudioSystem.playVoxelTap()}
+        onClick={interactive ? onClick : undefined}
       >
         {/* TOP FACE */}
         <div className={`${colorClass} brightness-110`} style={{ 
@@ -282,6 +332,34 @@ const VoxelScene: React.FC<VoxelSceneProps> = ({ level, small = false, isComplet
                <div className="absolute top-[20%] left-[20%] w-[20%] h-[10%] bg-white" style={{ transform: `translateY(${size/2}px) rotateX(-90deg) translateZ(${size/2 + 0.1}px) translateY(${h/2 - size/2}px)` }}></div>
                <div className="absolute top-[20%] right-[20%] w-[20%] h-[10%] bg-white" style={{ transform: `translateY(${size/2}px) rotateX(-90deg) translateZ(${size/2 + 0.1}px) translateY(${h/2 - size/2}px)` }}></div>
             </>
+        )}
+
+        {/* Special Elements for Peter and Christ */}
+        {isSpecial && (
+          <>
+            {/* Divine glow effect */}
+            <div 
+              className="absolute inset-0 rounded-full animate-pulse"
+              style={{
+                background: 'radial-gradient(circle, rgba(255,255,255,0.3) 0%, transparent 70%)',
+                transform: `translateZ(${h + 2}px)`,
+                filter: 'blur(2px)'
+              }}
+            />
+            
+            {/* Floating particles around special blocks */}
+            {[...Array(3)].map((_, i) => (
+              <div
+                key={i}
+                className="absolute w-1 h-1 bg-yellow-300 rounded-full animate-pulse"
+                style={{
+                  transform: `translate3d(${Math.sin(i * 120) * 10}px, ${Math.cos(i * 120) * 10}px, ${h + 5 + i * 3}px)`,
+                  animationDelay: `${i * 0.2}s`,
+                  boxShadow: '0 0 6px gold'
+                }}
+              />
+            ))}
+          </>
         )}
       </div>
     );
@@ -394,6 +472,9 @@ const VoxelScene: React.FC<VoxelSceneProps> = ({ level, small = false, isComplet
                 heightMult={props.heightMult}
                 glow={props.glow}
                 texture={props.texture}
+                interactive={props.interactive}
+                onClick={props.onClick}
+                isSpecial={props.isSpecial}
               />
             );
           })
