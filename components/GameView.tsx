@@ -285,7 +285,7 @@ const GameView: React.FC<GameViewProps> = ({ level, onBack, onHome, onComplete, 
                 >
                   <p>{msg.text}</p>
                   <div className="text-[10px] opacity-50 mt-1 text-right uppercase tracking-widest">
-                     {msg.role === MessageRole.USER ? t('identity') : t('guide')}
+                     {msg.role === MessageRole.USER ? level.bibleContext.character : t('guide')}
                   </div>
                 </div>
               </div>
@@ -309,7 +309,7 @@ const GameView: React.FC<GameViewProps> = ({ level, onBack, onHome, onComplete, 
                type="text"
                value={input}
                onChange={(e) => setInput(e.target.value)}
-               placeholder={isLoading ? t('praying') : `${t('speak')}...`}
+               placeholder={isLoading ? t('praying') : `As ${level.bibleContext.character}, speak your heart...`}
                disabled={isLoading || isLevelComplete}
                className="flex-1 bg-black text-white p-3 md:p-4 rounded border-2 border-gray-700 focus:border-yellow-500 outline-none font-serif text-base md:text-lg shadow-inner"
                autoFocus

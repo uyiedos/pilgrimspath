@@ -23,13 +23,23 @@ export const generateGuideResponse = async (
   language: LanguageCode,
   difficulty: DifficultyMode = 'normal'
 ): Promise<AIResponse> => {
-  const systemInstruction = `You are 'The Guide' for a biblical pilgrimage. Goal: Overcome ${level.sin} through ${level.virtue}. Respond in ${language}. Current Difficulty: ${difficulty}.`;
+  const systemInstruction = `You are 'The Guide' for a biblical pilgrimage. The player is embodying the character of ${level.bibleContext.character} from ${level.bibleContext.reference}. 
+
+  Character Context: ${level.bibleContext.narrativeIntro}
+  
+  Goal: Help the player overcome ${level.sin} through ${level.virtue}. 
+  Speak to them AS IF they are ${level.bibleContext.character}, using appropriate biblical language and context.
+  Reference their specific situation and challenges from the scripture.
+  Respond in ${language}. 
+  Current Difficulty: ${difficulty}.
+  
+  IMPORTANT: Make the player feel immersed in their character's journey. Use "you" to address them as the character, not as a modern player.`;
 
   // Check if API key is configured
   if (!process.env.API_KEY || process.env.API_KEY === 'your_google_ai_api_key_here') {
     console.warn("AI Service: No valid API key configured. Using demo mode.");
     return { 
-      text: "Welcome, pilgrim. I am your Guide on this journey of faith. To overcome " + level.sin + " through " + level.virtue + ", you must walk with intention and prayer. What spiritual challenge do you face today?", 
+      text: `My child ${level.bibleContext.character}, I see the weight of ${level.sin} upon your heart. Yet through ${level.virtue}, you shall find strength. As you walk this path, remember that ${level.bibleContext.narrativeIntro.split('.')[0]}. What troubles your spirit today?`,
       isSuccess: true 
     };
   }
@@ -37,6 +47,7 @@ export const generateGuideResponse = async (
   try {
     console.log("AI Request - API Key available:", !!process.env.API_KEY);
     console.log("AI Request - Model: gemini-1.5-flash");
+    console.log("AI Request - Character:", level.bibleContext.character);
     console.log("AI Request - Message:", userMessage);
     
     const response = await ai.models.generateContent({
@@ -54,7 +65,7 @@ export const generateGuideResponse = async (
   } catch (error) {
     console.error("AI Error Details:", error);
     return { 
-      text: "The path ahead requires wisdom. Take a moment to pray and reflect on your journey. What specific guidance do you seek?", 
+      text: `My dear ${level.bibleContext.character}, even in moments of uncertainty, the path forward becomes clear through prayer and reflection. Take a moment to consider how ${level.virtue} can guide you past ${level.sin}. What specific guidance do you seek on your journey?`, 
       isSuccess: false 
     };
   }
