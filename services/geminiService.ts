@@ -27,7 +27,7 @@ export const generateGuideResponse = async (
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-1.5-flash',
       contents: userMessage,
       config: {
         systemInstruction,
@@ -63,7 +63,7 @@ export const generateDailyDevotional = async (language: LanguageCode = 'en') => 
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-1.5-flash',
       contents: `Generate a daily devotional. Theme: ${theme}. Target Language: ${language}. Ensure the scripture is central.`,
       config: {
         systemInstruction: "You are a wise theologian. Create meaningful, biblically-grounded spiritual content.",
@@ -82,7 +82,7 @@ export const translateText = async (text: string, targetLanguage: LanguageCode):
   if (targetLanguage === 'en' || !text) return text;
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-1.5-flash',
       contents: `Translate the following text to ${targetLanguage}. Keep the tone spiritual and reverent: "${text}"`,
     });
     return response.text || text;
@@ -103,7 +103,7 @@ const verseLookupSchema: Schema = {
 export const findBiblicalVerse = async (query: string, language: LanguageCode = 'en') => {
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-1.5-flash',
       contents: `Identify the bible verse described or referenced here: "${query}". Return the full text in ${language} language.`,
       config: {
         systemInstruction: "You are a biblical scholar. Identify exact verses and provide their full text accurately in the requested language.",
@@ -141,7 +141,7 @@ const resourceSearchSchema: Schema = {
 export const findChristianResources = async (query: string) => {
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-1.5-flash',
       contents: `Find FREE Christian resources, ministries, and study materials for: "${query}".`,
       config: {
         tools: [{ googleSearch: {} }],
