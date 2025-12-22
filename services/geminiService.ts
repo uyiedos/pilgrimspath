@@ -50,20 +50,42 @@ export const generateGuideResponse = async (
 
   // Check if API key is configured
   if (!process.env.API_KEY || process.env.API_KEY === 'your_google_ai_api_key_here') {
-    console.warn("AI Service: No valid API key configured. Using demo mode.");
+    console.warn("AI Service: No valid API key configured. Using enhanced demo mode.");
     
-    // Enhanced demo mode with progression hints
-    const hints = [
-      `My child ${level.bibleContext.character}, I see the weight of ${level.sin} upon your heart. Yet through ${level.virtue}, you shall find strength. Consider how ${level.bibleContext.narrativeIntro.split('.')[0]}. What aspect of ${level.virtue} resonates most with you today?`,
-      `Dear ${level.bibleContext.character}, the path to overcoming ${level.sin} begins with small steps of ${level.virtue}. Remember that even the mightiest warriors of faith started with simple trust. What small act of ${level.virtue} can you take right now?`,
-      `${level.bibleContext.character}, your struggle with ${level.sin} is not unknown to the divine. The scriptures teach us that ${level.virtue} is forged in the fires of trial. How might your current struggle be shaping you into a vessel of ${level.virtue}?`
-    ];
+    // Dynamic demo mode with contextual responses based on user input
+    const userMessageLower = userMessage.toLowerCase();
+    let responseText = '';
+    let successRate = 0.3; // Base success rate
     
-    const randomHint = hints[Math.floor(Math.random() * hints.length)];
+    // Generate contextual responses based on user input
+    if (userMessageLower.includes('help') || userMessageLower.includes('stuck')) {
+      responseText = `My dear ${level.bibleContext.character}, I sense your struggle with ${level.sin}. Remember that ${level.virtue} is your key to freedom. Consider what small step of ${level.virtue} you could take right now. Even the mightiest prophets began with a single act of faith.`;
+      successRate = 0.6;
+    } else if (userMessageLower.includes('why') || userMessageLower.includes('how')) {
+      responseText = `${level.bibleContext.character}, your question reveals a seeking heart. The scriptures teach that ${level.virtue} conquers ${level.sin} through divine grace. As it is written: "${level.bibleContext.keyVerse}". How might this truth apply to your current situation?`;
+      successRate = 0.5;
+    } else if (userMessageLower.includes(level.virtue.toLowerCase())) {
+      responseText = `Excellent insight, ${level.bibleContext.character}! You're beginning to understand the power of ${level.virtue}. This virtue was instrumental in your biblical journey - ${level.bibleContext.narrativeIntro.split('.')[0]}. Continue to embrace this truth, and you will see victory over ${level.sin}.`;
+      successRate = 0.8;
+    } else if (userMessageLower.includes(level.sin.toLowerCase())) {
+      responseText = `I understand your battle with ${level.sin}, my child. This is the very struggle that defined your character's journey in ${level.bibleContext.reference}. But take heart! ${level.virtue} is the divine weapon given to you. What aspect of ${level.virtue} could you focus on today?`;
+      successRate = 0.4;
+    } else if (userMessageLower.includes('thank') || userMessageLower.includes('grateful')) {
+      responseText = `Your gratitude pleases the divine, ${level.bibleContext.character}. A thankful heart opens the way for ${level.virtue} to flourish. As you continue this journey, remember that every step forward in ${level.virtue} is a victory over ${level.sin}. How else can I guide you today?`;
+      successRate = 0.7;
+    } else {
+      // Default contextual responses
+      const defaultResponses = [
+        `Welcome, ${level.bibleContext.character}. I am here to guide you on this sacred journey. Your path involves overcoming ${level.sin} through the power of ${level.virtue}. What weighs most heavily on your heart today?`,
+        `${level.bibleContext.character}, I see you seeking wisdom. Remember your story from ${level.bibleContext.reference} - ${level.bibleContext.narrativeIntro.split('.')[0]}. How can ${level.virtue} help you in your current struggle with ${level.sin}?`,
+        `My child ${level.bibleContext.character}, the divine has brought you here for a purpose. Your journey through ${level.sin} toward ${level.virtue} mirrors the path of many great prophets. What aspect of this challenge would you like to explore?`
+      ];
+      responseText = defaultResponses[Math.floor(Math.random() * defaultResponses.length)];
+    }
     
     return { 
-      text: randomHint,
-      isSuccess: Math.random() > 0.7 // 30% chance of success in demo mode
+      text: responseText,
+      isSuccess: Math.random() < successRate
     };
   }
 
@@ -73,9 +95,18 @@ export const generateGuideResponse = async (
     console.log("AI Request - Character:", level.bibleContext.character);
     console.log("AI Request - Message:", userMessage);
     
+    // Build conversation context from history
+    let conversationContext = '';
+    if (history && history.length > 0) {
+      const recentHistory = history.slice(-4); // Last 4 messages for context
+      conversationContext = `\n\nRecent conversation:\n${recentHistory.join('\n')}`;
+    }
+    
+    const fullPrompt = `${userMessage}${conversationContext}`;
+    
     const response = await ai.models.generateContent({
       model: 'gemini-1.5-flash',
-      contents: userMessage,
+      contents: fullPrompt,
       config: {
         systemInstruction,
         responseMimeType: "application/json",
@@ -90,6 +121,11 @@ export const generateGuideResponse = async (
     if (!result.isSuccess && userMessage.toLowerCase().includes(level.virtue.toLowerCase())) {
       result.isSuccess = true;
       result.scriptureRef = level.bibleContext.reference;
+    }
+    
+    // Prevent repetitive responses
+    if (history.length > 0 && result.text === history[history.length - 1]) {
+      result.text = `${result.text} Let me elaborate further on this spiritual truth...`;
     }
     
     return result;
