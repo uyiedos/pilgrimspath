@@ -4,7 +4,7 @@ import type { Schema } from "@google/genai";
 import { AIResponse, LevelConfig, DifficultyMode } from '../types';
 import { LanguageCode } from '../translations';
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || 'demo-key' });
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const responseSchema: Schema = {
   type: Type.OBJECT,
@@ -23,124 +23,122 @@ export const generateGuideResponse = async (
   language: LanguageCode,
   difficulty: DifficultyMode = 'normal'
 ): Promise<AIResponse> => {
-  const systemInstruction = `You are 'The Guide' for a biblical pilgrimage. The player is embodying the character of ${level.bibleContext.character} from ${level.bibleContext.reference}. 
+  const personalityTraits = {
+    pilgrim: "wise, compassionate spiritual guide who walks alongside the pilgrim",
+    david: "prophetic mentor who understands the heart of a shepherd-king",
+    paul: "apostolic teacher who combines intellectual depth with pastoral care"
+  };
+  
+  const difficultyAdjustments = {
+    easy: "Use simple language, provide clear guidance, be very encouraging",
+    normal: "Use moderate complexity, balance guidance with challenge",
+    hard: "Use deep theological concepts, challenge the user to think deeply"
+  };
 
-  Character Context: ${level.bibleContext.narrativeIntro}
-  
-  Goal: Help the player overcome ${level.sin} through ${level.virtue}. 
-  Speak to them AS IF they are ${level.bibleContext.character}, using appropriate biblical language and context.
-  Reference their specific situation and challenges from the scripture.
-  Respond in ${language}. 
-  Current Difficulty: ${difficulty}.
-  
-  IMPORTANT: Make the player feel immersed in their character's journey. Use "you" to address them as the character, not as a modern player.
-  
-  PROGRESSION HELPERS:
-  - If player seems stuck, provide gentle hints about what they should focus on
-  - Guide them toward understanding how ${level.virtue} helps overcome ${level.sin}
-  - Reference the key verse: "${level.bibleContext.keyVerse}" when appropriate
-  - When they show understanding, reward them with scripture references
-  - Keep responses conversational and encouraging, not preachy
-  
-  INTERACTION STYLE:
-  - Ask questions to guide their thinking
-  - Share relevant biblical stories or parables
-  - Connect their struggles to the character's biblical journey
-  - Be patient and supportive in your guidance`;
-
-  // Check if API key is configured
-  if (!process.env.API_KEY || process.env.API_KEY === 'your_google_ai_api_key_here') {
-    console.warn("AI Service: No valid API key configured. Using enhanced demo mode.");
-    
-    // Dynamic demo mode with contextual responses based on user input
-    const userMessageLower = userMessage.toLowerCase();
-    let responseText = '';
-    let successRate = 0.3; // Base success rate
-    
-    // Generate contextual responses based on user input
-    if (userMessageLower.includes('help') || userMessageLower.includes('stuck')) {
-      responseText = `My dear ${level.bibleContext.character}, I sense your struggle with ${level.sin}. Remember that ${level.virtue} is your key to freedom. Consider what small step of ${level.virtue} you could take right now. Even the mightiest prophets began with a single act of faith.`;
-      successRate = 0.6;
-    } else if (userMessageLower.includes('why') || userMessageLower.includes('how')) {
-      responseText = `${level.bibleContext.character}, your question reveals a seeking heart. The scriptures teach that ${level.virtue} conquers ${level.sin} through divine grace. As it is written: "${level.bibleContext.keyVerse}". How might this truth apply to your current situation?`;
-      successRate = 0.5;
-    } else if (userMessageLower.includes(level.virtue.toLowerCase())) {
-      responseText = `Excellent insight, ${level.bibleContext.character}! You're beginning to understand the power of ${level.virtue}. This virtue was instrumental in your biblical journey - ${level.bibleContext.narrativeIntro.split('.')[0]}. Continue to embrace this truth, and you will see victory over ${level.sin}.`;
-      successRate = 0.8;
-    } else if (userMessageLower.includes(level.sin.toLowerCase())) {
-      responseText = `I understand your battle with ${level.sin}, my child. This is the very struggle that defined your character's journey in ${level.bibleContext.reference}. But take heart! ${level.virtue} is the divine weapon given to you. What aspect of ${level.virtue} could you focus on today?`;
-      successRate = 0.4;
-    } else if (userMessageLower.includes('thank') || userMessageLower.includes('grateful')) {
-      responseText = `Your gratitude pleases the divine, ${level.bibleContext.character}. A thankful heart opens the way for ${level.virtue} to flourish. As you continue this journey, remember that every step forward in ${level.virtue} is a victory over ${level.sin}. How else can I guide you today?`;
-      successRate = 0.7;
-    } else {
-      // Default contextual responses
-      const defaultResponses = [
-        `Welcome, ${level.bibleContext.character}. I am here to guide you on this sacred journey. Your path involves overcoming ${level.sin} through the power of ${level.virtue}. What weighs most heavily on your heart today?`,
-        `${level.bibleContext.character}, I see you seeking wisdom. Remember your story from ${level.bibleContext.reference} - ${level.bibleContext.narrativeIntro.split('.')[0]}. How can ${level.virtue} help you in your current struggle with ${level.sin}?`,
-        `My child ${level.bibleContext.character}, the divine has brought you here for a purpose. Your journey through ${level.sin} toward ${level.virtue} mirrors the path of many great prophets. What aspect of this challenge would you like to explore?`
-      ];
-      responseText = defaultResponses[Math.floor(Math.random() * defaultResponses.length)];
-    }
-    
-    return { 
-      text: responseText,
-      isSuccess: Math.random() < successRate
-    };
+  // Analyze conversation for better personalization
+  let conversationAnalysis = null;
+  if (history.length >= 4) {
+    conversationAnalysis = await analyzeConversation(history, level, language);
   }
 
+  const systemInstruction = `You are 'The Guide' for a biblical pilgrimage. 
+Persona: ${personalityTraits.pilgrim}
+Goal: Help the pilgrim overcome ${level.sin} through ${level.virtue}
+Biblical Context: ${level.bibleContext.storyTitle} (${level.bibleContext.reference})
+Character Focus: ${level.bibleContext.character}
+Key Verse: "${level.bibleContext.keyVerse}"
+Prayer Focus: ${level.bibleContext.prayerFocus}
+
+Difficulty Level: ${difficulty}
+${difficultyAdjustments[difficulty]}
+
+${conversationAnalysis ? `
+User Analysis:
+- Spiritual Maturity: ${conversationAnalysis.spiritualMaturity}
+- Emotional State: ${conversationAnalysis.emotionalState}
+- Understanding Level: ${conversationAnalysis.understandingLevel}
+` : ''}
+
+Enhanced Response Guidelines:
+- Speak in the voice of the biblical character when appropriate
+- Reference the key verse and story context naturally
+- Ask probing questions that encourage reflection
+- Provide practical spiritual guidance
+- Include relevant scripture when helpful
+- Show empathy and understanding
+- Adapt responses based on user's spiritual maturity and emotional state
+- Use ${language} language with spiritual reverence
+
+Advanced Conversation Flow:
+1. Acknowledge user's concern/question with empathy
+2. Connect to the biblical context and character's experience
+3. Provide spiritual insight tailored to their maturity level
+4. Ask a reflective question that challenges their thinking
+5. Encourage next step with personalized motivation
+6. Include relevant scripture or wisdom
+
+Success Criteria:
+Only mark isSuccess: true when the user demonstrates:
+- Genuine understanding of how ${level.virtue} overcomes ${level.sin}
+- Personal application of the biblical principle
+- Spiritual growth or transformation in their thinking
+- Readiness to apply the lesson in their life`;
+
   try {
-    console.log("AI Request - API Key available:", !!process.env.API_KEY);
-    console.log("AI Request - Model: gemini-1.5-flash");
-    console.log("AI Request - Character:", level.bibleContext.character);
-    console.log("AI Request - Message:", userMessage);
-    
-    // Build conversation context from history
-    let conversationContext = '';
-    if (history && history.length > 0) {
-      const recentHistory = history.slice(-4); // Last 4 messages for context
-      conversationContext = `\n\nRecent conversation:\n${recentHistory.join('\n')}`;
-    }
-    
-    const fullPrompt = `${userMessage}${conversationContext}`;
-    
     const response = await ai.models.generateContent({
-      model: 'gemini-1.5-flash',
-      contents: fullPrompt,
+      model: 'gemini-3-flash-preview',
+      contents: userMessage,
       config: {
         systemInstruction,
         responseMimeType: "application/json",
         responseSchema: responseSchema,
       }
     });
-    
-    console.log("AI Response:", response);
-    const result = JSON.parse(response.text || "{}") as AIResponse;
-    
-    // Make progression easier by being more generous with success
-    if (!result.isSuccess && userMessage.toLowerCase().includes(level.virtue.toLowerCase())) {
-      result.isSuccess = true;
-      result.scriptureRef = level.bibleContext.reference;
-    }
-    
-    // Prevent repetitive responses
-    if (history.length > 0 && result.text === history[history.length - 1]) {
-      result.text = `${result.text} Let me elaborate further on this spiritual truth...`;
-    }
-    
-    return result;
+    return JSON.parse(response.text || "{}") as AIResponse;
   } catch (error) {
-    console.error("AI Error Details:", error);
+    console.error("AI Response Error:", error);
     return { 
-      text: `My dear ${level.bibleContext.character}, even in moments of uncertainty, the path forward becomes clear through prayer and reflection. Take a moment to consider how ${level.virtue} can guide you past ${level.sin}. What specific guidance do you seek on your journey?`, 
+      text: `The path of ${level.virtue} requires patience. Take a moment to breathe and consider how ${level.bibleContext.character} might have faced this challenge. Remember: "${level.bibleContext.keyVerse}"`, 
       isSuccess: false 
     };
   }
 };
 
 export const getIntroMessage = async (level: LevelConfig, language: LanguageCode): Promise<string> => {
-  return level.bibleContext.narrativeIntro;
-}
+  const introSchema: Schema = {
+    type: Type.OBJECT,
+    properties: {
+      intro: { type: Type.STRING, description: "A compelling, immersive introduction to the spiritual journey" }
+    },
+    required: ["intro"]
+  };
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Generate an immersive introduction for a spiritual journey level.
+Level: ${level.name}
+Biblical Story: ${level.bibleContext.storyTitle} (${level.bibleContext.reference})
+Character: ${level.bibleContext.character}
+Challenge: Overcoming ${level.sin} through ${level.virtue}
+Setting: ${level.description}
+Key Verse: "${level.bibleContext.keyVerse}"
+Language: ${language}
+
+Create a first-person, immersive introduction that puts the user in the biblical scene. Make it personal and engaging (2-3 sentences).`,
+      config: {
+        systemInstruction: "You are a spiritual guide setting the scene for a pilgrim's journey. Create immersive, biblical introductions.",
+        responseMimeType: "application/json",
+        responseSchema: introSchema,
+      }
+    });
+    const result = JSON.parse(response.text || "{}");
+    return result.intro || level.bibleContext.narrativeIntro;
+  } catch (error) {
+    console.error("Intro generation failed:", error);
+    return level.bibleContext.narrativeIntro;
+  }
+};
 
 const devotionalSchema: Schema = {
   type: Type.OBJECT,
@@ -160,7 +158,7 @@ export const generateDailyDevotional = async (language: LanguageCode = 'en') => 
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-1.5-flash',
+      model: 'gemini-3-flash-preview',
       contents: `Generate a daily devotional. Theme: ${theme}. Target Language: ${language}. Ensure the scripture is central.`,
       config: {
         systemInstruction: "You are a wise theologian. Create meaningful, biblically-grounded spiritual content.",
@@ -179,7 +177,7 @@ export const translateText = async (text: string, targetLanguage: LanguageCode):
   if (targetLanguage === 'en' || !text) return text;
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-1.5-flash',
+      model: 'gemini-3-flash-preview',
       contents: `Translate the following text to ${targetLanguage}. Keep the tone spiritual and reverent: "${text}"`,
     });
     return response.text || text;
@@ -200,7 +198,7 @@ const verseLookupSchema: Schema = {
 export const findBiblicalVerse = async (query: string, language: LanguageCode = 'en') => {
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-1.5-flash',
+      model: 'gemini-3-flash-preview',
       contents: `Identify the bible verse described or referenced here: "${query}". Return the full text in ${language} language.`,
       config: {
         systemInstruction: "You are a biblical scholar. Identify exact verses and provide their full text accurately in the requested language.",
@@ -238,7 +236,7 @@ const resourceSearchSchema: Schema = {
 export const findChristianResources = async (query: string) => {
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-1.5-flash',
+      model: 'gemini-3-flash-preview',
       contents: `Find FREE Christian resources, ministries, and study materials for: "${query}".`,
       config: {
         tools: [{ googleSearch: {} }],
@@ -250,6 +248,170 @@ export const findChristianResources = async (query: string) => {
     return JSON.parse(response.text || "{}");
   } catch (e) {
     console.error("Resource search failed", e);
+    return null;
+  }
+};
+
+const hintSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    hint: { type: Type.STRING, description: "A gentle, spiritual hint that guides without giving away the answer" },
+    reflection: { type: Type.STRING, description: "A reflective question to help the user think deeper" },
+    encouragement: { type: Type.STRING, description: "An encouraging word for the pilgrim" }
+  },
+  required: ["hint", "reflection", "encouragement"]
+};
+
+export const generateSpiritualHint = async (
+  level: LevelConfig, 
+  userMessage: string, 
+  language: LanguageCode = 'en'
+) => {
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `The pilgrim is struggling with: "${userMessage}"
+Level: ${level.name} - overcoming ${level.sin} through ${level.virtue}
+Biblical Context: ${level.bibleContext.storyTitle} with ${level.bibleContext.character}
+Key Verse: "${level.bibleContext.keyVerse}"
+Language: ${language}
+
+Generate a gentle spiritual hint that helps the pilgrim reflect without giving direct answers.`,
+      config: {
+        systemInstruction: "You are a wise spiritual guide. Provide hints that encourage reflection and spiritual growth. Be gentle, encouraging, and biblical.",
+        responseMimeType: "application/json",
+        responseSchema: hintSchema
+      }
+    });
+    return JSON.parse(response.text || "{}");
+  } catch (e) {
+    console.error("Hint generation failed", e);
+    return {
+      hint: "Consider how the biblical character faced similar challenges.",
+      reflection: "What might God be teaching you in this moment?",
+      encouragement: "The journey of faith is taken one step at a time."
+    };
+  }
+};
+
+const moralChoiceSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    situation: { type: Type.STRING, description: "A moral dilemma related to the level's theme" },
+    choices: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "3-4 choices the pilgrim can make"
+    },
+    wisdom: { type: Type.STRING, description: "Biblical wisdom about the choice" }
+  },
+  required: ["situation", "choices", "wisdom"]
+};
+
+export const generateMoralChoice = async (
+  level: LevelConfig,
+  language: LanguageCode = 'en'
+) => {
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Create a moral choice scenario for spiritual growth.
+Level Theme: ${level.virtue} vs ${level.sin}
+Biblical Context: ${level.bibleContext.storyTitle}
+Character: ${level.bibleContext.character}
+Language: ${language}
+
+Create a realistic moral dilemma that tests the pilgrim's understanding of ${level.virtue}.`,
+      config: {
+        systemInstruction: "You are a spiritual teacher creating meaningful moral choices. Make scenarios realistic and biblically grounded.",
+        responseMimeType: "application/json",
+        responseSchema: moralChoiceSchema
+      }
+    });
+    return JSON.parse(response.text || "{}");
+  } catch (e) {
+    console.error("Moral choice generation failed", e);
+    return null;
+  }
+};
+
+const conversationAnalysisSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    spiritualMaturity: { type: Type.STRING, description: "Assessment of user's spiritual maturity level" },
+    emotionalState: { type: Type.STRING, description: "User's current emotional state" },
+    understandingLevel: { type: Type.STRING, description: "How well user grasps the spiritual concept" },
+    nextStep: { type: Type.STRING, description: "Suggested next step in the spiritual journey" },
+    encouragement: { type: Type.STRING, description: "Personalized encouragement" }
+  },
+  required: ["spiritualMaturity", "emotionalState", "understandingLevel", "nextStep", "encouragement"]
+};
+
+export const analyzeConversation = async (
+  messages: string[],
+  level: LevelConfig,
+  language: LanguageCode = 'en'
+) => {
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Analyze this spiritual conversation:
+Conversation History: ${messages.join('\n')}
+Level: ${level.name} - ${level.virtue} vs ${level.sin}
+Biblical Context: ${level.bibleContext.storyTitle}
+Language: ${language}
+
+Assess the pilgrim's spiritual journey and provide personalized guidance.`,
+      config: {
+        systemInstruction: "You are a wise spiritual mentor. Analyze conversations with deep spiritual insight and compassion. Provide thoughtful, personalized assessments.",
+        responseMimeType: "application/json",
+        responseSchema: conversationAnalysisSchema
+      }
+    });
+    return JSON.parse(response.text || "{}");
+  } catch (e) {
+    console.error("Conversation analysis failed", e);
+    return null;
+  }
+};
+
+const adaptiveGuidanceSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    response: { type: Type.STRING, description: "Personalized spiritual response" },
+    approach: { type: Type.STRING, description: "Teaching approach to use" },
+    scriptureSuggestion: { type: Type.STRING, description: "Relevant scripture suggestion" },
+    prayerFocus: { type: Type.STRING, description: "Suggested prayer focus" }
+  },
+  required: ["response", "approach", "scriptureSuggestion", "prayerFocus"]
+};
+
+export const generateAdaptiveGuidance = async (
+  level: LevelConfig,
+  userMessage: string,
+  conversationAnalysis: any,
+  language: LanguageCode = 'en'
+) => {
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Generate adaptive spiritual guidance:
+User Message: "${userMessage}"
+Level: ${level.name} - ${level.virtue} vs ${level.sin}
+User Analysis: ${JSON.stringify(conversationAnalysis)}
+Biblical Context: ${level.bibleContext.storyTitle}
+Language: ${language}
+
+Create personalized guidance that adapts to the user's spiritual maturity and emotional state.`,
+      config: {
+        systemInstruction: "You are an adaptive spiritual guide. Tailor your responses to each pilgrim's unique spiritual journey and current needs.",
+        responseMimeType: "application/json",
+        responseSchema: adaptiveGuidanceSchema
+      }
+    });
+    return JSON.parse(response.text || "{}");
+  } catch (e) {
+    console.error("Adaptive guidance failed", e);
     return null;
   }
 };

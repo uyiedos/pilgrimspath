@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { LevelConfig, Message, MessageRole, DifficultyMode } from '../types';
 import VoxelScene from './VoxelScene';
 import Button from './Button';
-import { generateGuideResponse, getIntroMessage } from '../services/geminiService';
+import { generateGuideResponse, getIntroMessage, generateSpiritualHint } from '../services/geminiService';
 import { LanguageCode, UI_TEXT } from '../translations';
 import { AudioSystem } from '../utils/audio';
 import TranslatedText from './TranslatedText';
@@ -15,14 +15,18 @@ interface GameViewProps {
   onComplete: (verse: string) => void;
   language: LanguageCode;
   difficulty: DifficultyMode;
+  onUnlockVerse?: (verse: string) => void;
 }
 
-const GameView: React.FC<GameViewProps> = ({ level, onBack, onHome, onComplete, language, difficulty }) => {
+const GameView: React.FC<GameViewProps> = ({ level, onBack, onHome, onComplete, language, difficulty, onUnlockVerse }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isLevelComplete, setIsLevelComplete] = useState(false);
   const [isContextExpanded, setIsContextExpanded] = useState(true);
+  const [showHint, setShowHint] = useState(false);
+  const [hint, setHint] = useState<any>(null);
+  const [conversationStuck, setConversationStuck] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const t = (key: keyof typeof UI_TEXT['en']) => {
@@ -49,6 +53,26 @@ const GameView: React.FC<GameViewProps> = ({ level, onBack, onHome, onComplete, 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Detect if conversation is stuck (too many messages without success)
+  useEffect(() => {
+    if (messages.length >= 8 && !isLevelComplete) {
+      const recentMessages = messages.slice(-4);
+      const hasProgress = recentMessages.some(msg => msg.role === MessageRole.GUIDE && msg.text.includes('understand') || msg.text.includes('growth'));
+      if (!hasProgress) {
+        setConversationStuck(true);
+      }
+    }
+  }, [messages, isLevelComplete]);
+
+  const handleGetHint = async () => {
+    if (!input.trim()) return;
+    
+    AudioSystem.playVoxelTap();
+    const hintData = await generateSpiritualHint(level, input, language);
+    setHint(hintData);
+    setShowHint(true);
+  };
 
   const handleSend = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -89,6 +113,12 @@ const GameView: React.FC<GameViewProps> = ({ level, onBack, onHome, onComplete, 
         AudioSystem.playLevelComplete();
         // Ensure context is open to show the revealed verse
         setIsContextExpanded(true);
+        
+        // Unlock the bible verse
+        const verseToUnlock = level.bibleContext.keyVerse;
+        if (onUnlockVerse) {
+          onUnlockVerse(verseToUnlock);
+        }
     }
   };
 
@@ -97,8 +127,8 @@ const GameView: React.FC<GameViewProps> = ({ level, onBack, onHome, onComplete, 
       
       {/* Level Completion Overlay */}
       {isLevelComplete && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in p-4">
-           <div className="text-center p-6 md:p-8 bg-gray-900 border-4 border-yellow-500 rounded-xl shadow-[0_0_50px_rgba(234,179,8,0.3)] max-w-lg w-full transform animate-slide-up">
+        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-50 flex items-center justify-center animate-fade-in p-4 max-w-lg w-full">
+           <div className="text-center p-4 md:p-6 bg-gray-900 border-4 border-yellow-500 rounded-xl shadow-[0_0_50px_rgba(234,179,8,0.3)] w-full transform animate-slide-up">
               <div className="text-4xl md:text-6xl mb-4 animate-bounce">✨</div>
               <h2 className="text-2xl md:text-4xl font-retro text-yellow-400 mb-2 text-shadow-md">{t('level_cleared')}</h2>
               <p className="text-gray-300 font-serif italic mb-6 text-sm md:text-base">
@@ -285,7 +315,7 @@ const GameView: React.FC<GameViewProps> = ({ level, onBack, onHome, onComplete, 
                 >
                   <p>{msg.text}</p>
                   <div className="text-[10px] opacity-50 mt-1 text-right uppercase tracking-widest">
-                     {msg.role === MessageRole.USER ? level.bibleContext.character : t('guide')}
+                     {msg.role === MessageRole.USER ? t('identity') : t('guide')}
                   </div>
                 </div>
               </div>
@@ -309,7 +339,7 @@ const GameView: React.FC<GameViewProps> = ({ level, onBack, onHome, onComplete, 
                type="text"
                value={input}
                onChange={(e) => setInput(e.target.value)}
-               placeholder={isLoading ? t('praying') : `As ${level.bibleContext.character}, speak your heart...`}
+               placeholder={isLoading ? t('praying') : `${t('speak')}...`}
                disabled={isLoading || isLevelComplete}
                className="flex-1 bg-black text-white p-3 md:p-4 rounded border-2 border-gray-700 focus:border-yellow-500 outline-none font-serif text-base md:text-lg shadow-inner"
                autoFocus

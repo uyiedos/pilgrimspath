@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   AppView, User, GameState, BiblePlan, 
-  Achievement, SupportTicket
+  Achievement, SupportTicket, GameModeId
 } from './types';
 import { 
   GAMES, ACHIEVEMENTS, PLAYER_LEVELS, DEFAULT_PLANS
@@ -10,6 +10,7 @@ import {
 import { LanguageCode } from './translations';
 import { supabase } from './lib/supabase';
 import { AudioSystem } from './utils/audio';
+import { saveGameProgress, loadGameProgress, GameData, GameProgress } from './services/gameProgressService';
 
 // Components
 import AuthView from './components/AuthView';
@@ -144,12 +145,17 @@ export const App: React.FC = () => {
       }));
   };
 
-  const handleLogin = (user: User, language: LanguageCode) => {
+  const handleLogin = async (user: User, language: LanguageCode) => {
+    // Load game progress from Supabase
+    const gameData = await loadGameProgress(user.id);
+    
     setGameState(prev => ({
       ...prev,
       user,
       language,
       totalPoints: user.totalPoints || 0,
+      progress: (gameData?.progress as Record<GameModeId, number>) || { pilgrim: 1, david: 1, paul: 1 },
+      collectedVerses: gameData?.collectedVerses || [],
       view: AppView.LANDING
     }));
     
@@ -162,6 +168,23 @@ export const App: React.FC = () => {
         setShowDailyReward(true);
     }
   };
+
+  // Save game progress to Supabase whenever it changes
+  useEffect(() => {
+    if (gameState.user && (gameState.progress || gameState.collectedVerses)) {
+      const gameData: GameData = {
+        progress: gameState.progress,
+        collectedVerses: gameState.collectedVerses,
+        totalXP: gameState.totalPoints
+      };
+      
+      saveGameProgress(gameState.user.id, gameData).then(success => {
+        if (!success) {
+          console.error('Failed to save game progress to Supabase');
+        }
+      });
+    }
+  }, [gameState.progress, gameState.collectedVerses, gameState.totalPoints, gameState.user]);
 
   const handleClaimDaily = async () => {
       if (!gameState.user) return;
@@ -360,15 +383,27 @@ export const App: React.FC = () => {
         
         {gameState.view === AppView.MAP && <LevelMap gameConfig={activeGame} unlockedLevelId={gameState.progress[gameState.activeGameId]} onSelectLevel={(lvlId) => { setActiveLevelId(lvlId); handleNav(AppView.GAME); }} onLibrary={() => handleNav(AppView.GAME_LIBRARY)} onHome={() => handleNav(AppView.LANDING)} language={gameState.language} />}
         
-        {gameState.view === AppView.GAME && activeLevel && <GameView level={activeLevel} onBack={() => handleNav(AppView.MAP)} onHome={() => handleNav(AppView.LANDING)} onComplete={(verse) => { 
-            const newProgress = { ...gameState.progress, [gameState.activeGameId]: Math.max(gameState.progress[gameState.activeGameId], activeLevel.id + 1) };
-            const newVerses = gameState.collectedVerses.includes(verse) ? gameState.collectedVerses : [...gameState.collectedVerses, verse];
-            setGameState(prev => ({ ...prev, progress: newProgress, collectedVerses: newVerses }));
-            addPoints(200);
-            unlockAchievement('first_step'); // Unlock basic achievement on level complete
-            setActiveLevelId(null);
-            handleNav(AppView.MAP);
-        }} language={gameState.language} difficulty={gameState.user?.difficulty || 'normal'} />}
+        {gameState.view === AppView.GAME && activeLevel && <GameView 
+            level={activeLevel} 
+            onBack={() => handleNav(AppView.MAP)} 
+            onHome={() => handleNav(AppView.LANDING)} 
+            onComplete={(verse) => { 
+                const newProgress = { ...gameState.progress, [gameState.activeGameId]: Math.max(gameState.progress[gameState.activeGameId], activeLevel.id + 1) };
+                const verseToStore = activeLevel.bibleContext.keyVerse;
+                const newVerses = gameState.collectedVerses.includes(verseToStore) ? gameState.collectedVerses : [...gameState.collectedVerses, verseToStore];
+                setGameState(prev => ({ ...prev, progress: newProgress, collectedVerses: newVerses }));
+                addPoints(200);
+                unlockAchievement('first_step'); // Unlock basic achievement on level complete
+                setActiveLevelId(null);
+                handleNav(AppView.MAP);
+            }} 
+            onUnlockVerse={(verse) => {
+                const newVerses = gameState.collectedVerses.includes(verse) ? gameState.collectedVerses : [...gameState.collectedVerses, verse];
+                setGameState(prev => ({ ...prev, collectedVerses: newVerses }));
+            }}
+            language={gameState.language} 
+            difficulty={gameState.user?.difficulty || 'normal'} 
+        />}
         
         {gameState.view === AppView.JOURNAL && <JournalView state={gameState} onBack={() => handleNav(AppView.LANDING)} onSaveNote={(content) => setGameState(prev => ({...prev, journalEntries: [{ id: Date.now().toString(), type: 'note', content, createdAt: new Date().toISOString() }, ...prev.journalEntries]}))} />}
         
