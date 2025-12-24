@@ -1,0 +1,91 @@
+
+-- =================================================================
+-- JOURNEY APP: MARKETPLACE AUTOMATION & STATS (Chart & Feed)
+-- =================================================================
+
+BEGIN;
+
+-- 1. BACKFILL LISTINGS (Auto-List existing artifacts)
+-- Iterates through all artifacts that are NOT currently active listings.
+-- Lists them at (Base Value * 1.1) to ensure value growth.
+DO $$
+DECLARE
+    r record;
+    v_list_price bigint;
+BEGIN
+    FOR r IN 
+        SELECT * FROM public.avatar_history 
+        WHERE id NOT IN (SELECT avatar_id FROM public.marketplace_listings WHERE status = 'active') 
+    LOOP
+        -- Calculate price: Floor of (Attached XP or 500 default) * 1.10
+        -- Ensures items always appreciate slightly when relisted automatically
+        v_list_price := floor(GREATEST(COALESCE(r.attached_xp, 0), 500) * 1.10);
+        
+        -- Insert Listing
+        INSERT INTO public.marketplace_listings (avatar_id, seller_id, price, attached_xp, status)
+        VALUES (
+            r.id, 
+            r.user_id, 
+            v_list_price, 
+            GREATEST(COALESCE(r.attached_xp, 0), 500), 
+            'active'
+        );
+    END LOOP;
+END $$;
+
+-- 2. UPDATE STATS RPC (Includes Time-Series Data)
+CREATE OR REPLACE FUNCTION get_marketplace_stats()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_volume bigint;
+    v_active_count int;
+    v_holders int;
+    v_chart_data jsonb;
+    v_recent_activity jsonb;
+BEGIN
+    -- Basic Stats
+    SELECT total_volume INTO v_volume FROM public.treasury WHERE id = 1;
+    SELECT count(*) INTO v_active_count FROM public.marketplace_listings WHERE status = 'active';
+    SELECT count(DISTINCT user_id) INTO v_holders FROM public.avatar_history;
+
+    -- Chart Data: Daily Volume from sold listings (Last 7 Days)
+    SELECT jsonb_agg(t) INTO v_chart_data FROM (
+        SELECT 
+            to_char(created_at, 'MM-DD') as label,
+            SUM(price) as value
+        FROM public.marketplace_listings
+        WHERE status = 'sold'
+        AND created_at > now() - interval '7 days'
+        GROUP BY 1
+        ORDER BY 1 ASC
+    ) t;
+
+    -- Recent Activity: Last 5 sales
+    SELECT jsonb_agg(t) INTO v_recent_activity FROM (
+        SELECT 
+            m.price,
+            ah.collection_name,
+            u.username as buyer,
+            m.created_at
+        FROM public.marketplace_listings m
+        JOIN public.avatar_history ah ON m.avatar_id = ah.id
+        JOIN public.users u ON ah.user_id = u.id -- Current owner is the buyer of a sold item
+        WHERE m.status = 'sold'
+        ORDER BY m.created_at DESC
+        LIMIT 5
+    ) t;
+
+    RETURN jsonb_build_object(
+        'volume', COALESCE(v_volume, 0),
+        'count', v_active_count,
+        'holders', v_holders,
+        'chart', COALESCE(v_chart_data, '[]'::jsonb),
+        'activity', COALESCE(v_recent_activity, '[]'::jsonb)
+    );
+END;
+$$;
+
+COMMIT;

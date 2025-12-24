@@ -1,0 +1,56 @@
+
+-- =================================================================
+-- PLAN STAGE LOGGING FIX
+-- Ensures every completed reading stage is permanently recorded.
+-- =================================================================
+
+BEGIN;
+
+-- 1. Create Stage Log Table (Tracks individual days completed)
+CREATE TABLE IF NOT EXISTS public.user_plan_stages (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    plan_id text NOT NULL,
+    stage_number int NOT NULL,
+    completed_at timestamp with time zone DEFAULT now(),
+    UNIQUE(user_id, plan_id, stage_number)
+);
+
+-- 2. Security Policies
+ALTER TABLE public.user_plan_stages ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users Manage Stages" ON public.user_plan_stages;
+CREATE POLICY "Users Manage Stages" ON public.user_plan_stages 
+FOR ALL USING (auth.uid() = user_id);
+
+-- 3. Atomic Completion RPC
+-- This function logs the stage AND updates the parent plan progress safely.
+CREATE OR REPLACE FUNCTION complete_plan_stage(p_plan_id text, p_stage_no int)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_id uuid := auth.uid();
+BEGIN
+    -- A. Log the specific stage
+    INSERT INTO public.user_plan_stages (user_id, plan_id, stage_number)
+    VALUES (v_user_id, p_plan_id, p_stage_no)
+    ON CONFLICT (user_id, plan_id, stage_number) 
+    DO UPDATE SET completed_at = now(); -- Update timestamp if re-reading
+
+    -- B. Update the main plan progress
+    -- Upsert ensures the plan exists in user_plans even if this is the first interaction
+    -- We use GREATEST to ensure progress never regresses if a user re-reads an old day.
+    INSERT INTO public.user_plans (user_id, id, progress, is_active, last_completed_date, updated_at)
+    VALUES (v_user_id, p_plan_id, p_stage_no, true, now(), now())
+    ON CONFLICT (user_id, id) 
+    DO UPDATE SET 
+        progress = GREATEST(user_plans.progress, EXCLUDED.progress),
+        last_completed_date = now(),
+        updated_at = now(),
+        is_active = true;
+END;
+$$;
+
+COMMIT;

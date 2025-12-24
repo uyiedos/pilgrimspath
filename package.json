@@ -1,0 +1,34 @@
+
+{
+  "name": "journey-app",
+  "version": "10.0.0",
+  "description": "The Journey: Pilgrim's Path - v10.0 Sovereign Stewardship. A spiritual RPG and community economy built on React and Gemini.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "android": "npx cap add android && npx cap sync && npx cap open android"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "@google/genai": "^1.33.0",
+    "@supabase/supabase-js": "^2.39.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/app": "^6.0.0",
+    "@capacitor/haptics": "^6.0.0",
+    "@capacitor/keyboard": "^6.0.0",
+    "@capacitor/status-bar": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "@capacitor/cli": "^6.0.0",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.1"
+  }
+}

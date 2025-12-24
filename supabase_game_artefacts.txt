@@ -1,0 +1,61 @@
+
+-- =================================================================
+-- GAME ARTIFACT MINTING PROTOCOL
+-- =================================================================
+
+BEGIN;
+
+-- 1. RPC: MINT LEVEL ARTIFACT (System Reward)
+-- Called when a user completes a level.
+-- Inserts artifact into history with "Game Artefact" collection.
+-- Sets fixed 200 XP value.
+CREATE OR REPLACE FUNCTION mint_level_artifact(
+    p_user_id uuid,
+    p_level_name text,
+    p_image_url text,
+    p_verse text
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_style_prompt text;
+BEGIN
+    -- Construct prompt description
+    v_style_prompt := 'Game Memory: ' || p_level_name || ' - ' || p_verse;
+
+    -- Insert into Avatar History (Inventory)
+    INSERT INTO public.avatar_history (
+        user_id, 
+        avatar_url, 
+        style_prompt, 
+        collection_name, 
+        attached_xp,
+        created_at
+    )
+    VALUES (
+        p_user_id, 
+        p_image_url, 
+        v_style_prompt, 
+        'Game Artefact', 
+        200,
+        now()
+    );
+
+    -- Log Activity
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (
+        p_user_id, 
+        'achievement', 
+        jsonb_build_object(
+            'title', 'Artifact Discovered', 
+            'icon', '💎', 
+            'reward', 200,
+            'message', 'You found a Game Artefact: ' || p_level_name
+        )
+    );
+END;
+$$;
+
+COMMIT;

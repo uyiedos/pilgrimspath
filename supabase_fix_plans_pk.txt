@@ -1,0 +1,16 @@
+
+-- =================================================================
+-- FIX: USER PLANS PRIMARY KEY CONSTRAINT
+-- Run this script to ensure 'upsert' works for saving progress.
+-- =================================================================
+
+BEGIN;
+
+-- 1. Drop existing primary key (safe if exists)
+ALTER TABLE public.user_plans DROP CONSTRAINT IF EXISTS user_plans_pkey;
+
+-- 2. Create correct Composite Primary Key
+-- This ensures that the combination of user_id AND plan_id is unique.
+ALTER TABLE public.user_plans ADD PRIMARY KEY (user_id, id);
+
+COMMIT;

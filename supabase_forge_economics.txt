@@ -1,0 +1,143 @@
+
+-- =================================================================
+-- JOURNEY APP: BENEFICIAL FORGE ECONOMY (v12.0)
+-- "Profit for Everyone" Model
+-- =================================================================
+
+BEGIN;
+
+-- 1. UPDATED FORGE & LIST RPC
+-- Sets price to 130% of cost.
+CREATE OR REPLACE FUNCTION forge_and_list_artifact(
+    p_user_id uuid,
+    p_image_url text,
+    p_style_prompt text,
+    p_collection_name text,
+    p_cost int
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_balance bigint;
+    v_artifact_id uuid;
+    v_listing_id uuid;
+    v_list_price bigint;
+BEGIN
+    -- 1. Check Balance
+    SELECT total_points INTO v_user_balance FROM public.users WHERE id = p_user_id;
+    
+    IF v_user_balance < p_cost THEN
+        RAISE EXCEPTION 'Insufficient Spirit XP to forge.';
+    END IF;
+
+    -- 2. Deduct Cost (Invested into Asset)
+    UPDATE public.users 
+    SET total_points = total_points - p_cost 
+    WHERE id = p_user_id;
+
+    -- 3. Create Artifact Record (Value = Cost)
+    INSERT INTO public.avatar_history (user_id, avatar_url, style_prompt, collection_name, attached_xp)
+    VALUES (p_user_id, p_image_url, p_style_prompt, p_collection_name, p_cost)
+    RETURNING id INTO v_artifact_id;
+
+    -- 4. Calculate List Price (Cost * 1.30)
+    -- Example: 500 * 1.3 = 650
+    v_list_price := floor(p_cost * 1.30);
+
+    -- 5. Auto-List on Marketplace
+    INSERT INTO public.marketplace_listings (avatar_id, seller_id, price, attached_xp, status)
+    VALUES (v_artifact_id, p_user_id, v_list_price, p_cost, 'active')
+    RETURNING id INTO v_listing_id;
+
+    -- 6. Log Transaction
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_user_id, p_cost, 'forge_creation', jsonb_build_object('artifact_id', v_artifact_id, 'list_price', v_list_price));
+
+    -- 7. Log Activity
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (p_user_id, 'achievement', jsonb_build_object('title', 'Artifact Forged', 'icon', '⚒️', 'cost', p_cost));
+
+    RETURN jsonb_build_object(
+        'success', true, 
+        'artifact_id', v_artifact_id, 
+        'listing_id', v_listing_id, 
+        'list_price', v_list_price
+    );
+END;
+$$;
+
+-- 2. UPDATED BUY_AVATAR (Profit Distribution Logic)
+-- Detects if price is 1.3x value. If so:
+-- Seller gets 1.2x (20% Profit). Treasury gets 0.1x (Tax). Buyer gets 1.0x (Value).
+CREATE OR REPLACE FUNCTION buy_avatar(p_listing_id uuid, p_buyer_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_seller_id uuid;
+    v_avatar_id uuid;
+    v_price bigint;
+    v_attached_xp bigint;
+    v_buyer_balance bigint;
+    v_fee bigint;
+    v_seller_share bigint;
+BEGIN
+    -- Get listing details
+    SELECT seller_id, avatar_id, price, attached_xp 
+    INTO v_seller_id, v_avatar_id, v_price, v_attached_xp
+    FROM public.marketplace_listings
+    WHERE id = p_listing_id AND status = 'active'
+    FOR UPDATE;
+
+    IF NOT FOUND THEN RAISE EXCEPTION 'Listing not found or active'; END IF;
+    IF v_seller_id = p_buyer_id THEN RAISE EXCEPTION 'Cannot buy your own artifact'; END IF;
+
+    -- Check buyer balance
+    SELECT total_points INTO v_buyer_balance FROM public.users WHERE id = p_buyer_id;
+    IF v_buyer_balance < v_price THEN RAISE EXCEPTION 'Insufficient funds'; END IF;
+
+    -- CALCULATE FEES & SHARES (The "Beneficial Forge" Logic)
+    -- Check if this is an auto-listed ratio (Price approx 130% of Attached XP)
+    IF v_price = floor(v_attached_xp * 1.30) THEN
+        -- "Beneficial Forge" Split
+        -- Example: Val 500, Price 650.
+        v_fee := floor(v_attached_xp * 0.10); -- 50 (10% of Base)
+        v_seller_share := floor(v_attached_xp * 1.20); -- 600 (120% of Base / 20% Profit)
+        
+        -- Remaining dust (if any due to rounding) goes to Treasury
+        v_fee := v_fee + (v_price - v_seller_share - v_fee);
+    ELSE
+        -- Standard Resale: 10% Tax on Total Price
+        v_fee := floor(v_price * 0.10);
+        v_seller_share := v_price - v_fee;
+    END IF;
+
+    -- 1. Transfer Funds
+    -- Deduct Price from Buyer
+    UPDATE public.users SET total_points = total_points - v_price WHERE id = p_buyer_id;
+    
+    -- Pay Seller
+    UPDATE public.users SET total_points = total_points + v_seller_share WHERE id = v_seller_id;
+    
+    -- Pay Treasury
+    UPDATE public.treasury SET balance = balance + v_fee, total_volume = total_volume + v_price WHERE id = 1;
+
+    -- 2. Transfer Ownership
+    -- Buyer inherits the asset with its attached_xp intact (100% Value Retention)
+    UPDATE public.avatar_history SET user_id = p_buyer_id WHERE id = v_avatar_id;
+    
+    -- 3. Close Listing
+    UPDATE public.marketplace_listings SET status = 'sold' WHERE id = p_listing_id;
+
+    -- 4. Log
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (p_buyer_id, 'achievement', jsonb_build_object('title', 'Market Acquisition', 'icon', '🛒', 'asset_value', v_attached_xp));
+
+    RETURN true;
+END;
+$$;
+
+COMMIT;

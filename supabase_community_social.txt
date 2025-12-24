@@ -1,0 +1,98 @@
+
+-- ==========================================
+-- COMMUNITY SOCIAL & ECONOMY FEATURES
+-- ==========================================
+
+-- 1. Community Table Updates
+alter table public.communities 
+add column if not exists treasury_balance bigint default 0,
+add column if not exists total_achievements int default 0;
+
+-- 2. Member Status Tracking
+alter table public.community_members
+add column if not exists last_fee_paid_at timestamp with time zone default now();
+
+-- 3. Community Posts
+create table if not exists public.community_posts (
+  id uuid default uuid_generate_v4() primary key,
+  community_id uuid references public.communities(id) on delete cascade not null,
+  user_id uuid references public.users(id) not null,
+  content text not null,
+  type text default 'general', -- 'general', 'prayer', 'testimony'
+  likes_count int default 0,
+  comments_count int default 0,
+  created_at timestamp with time zone default now()
+);
+
+-- 4. Community Comments
+create table if not exists public.community_comments (
+  id uuid default uuid_generate_v4() primary key,
+  post_id uuid references public.community_posts(id) on delete cascade not null,
+  user_id uuid references public.users(id) not null,
+  content text not null,
+  created_at timestamp with time zone default now()
+);
+
+-- 5. Post Likes
+create table if not exists public.community_post_likes (
+  post_id uuid references public.community_posts(id) on delete cascade not null,
+  user_id uuid references public.users(id) not null,
+  created_at timestamp with time zone default now(),
+  primary key (post_id, user_id)
+);
+
+-- 6. RPC: Contribute Monthly Fee
+-- Deducts XP from user and adds to community treasury, strengthening its rank
+create or replace function contribute_community_fee(p_user_id uuid, p_community_id uuid, p_amount int)
+returns boolean
+language plpgsql
+security definer
+as $$
+declare
+  user_xp bigint;
+begin
+  -- 1. Check user balance
+  select total_points into user_xp from public.users where id = p_user_id;
+  if user_xp < p_amount then
+    return false;
+  end if;
+
+  -- 2. Deduct from user
+  update public.users set total_points = total_points - p_amount where id = p_user_id;
+
+  -- 3. Add to community treasury
+  update public.communities set treasury_balance = treasury_balance + p_amount where id = p_community_id;
+
+  -- 4. Update member record
+  update public.community_members set last_fee_paid_at = now() where user_id = p_user_id and community_id = p_community_id;
+
+  -- 5. Global Treasury gets a 10% tithe-of-tithe if applicable, or just stay in community
+  
+  return true;
+end;
+$$;
+
+-- 7. RLS
+alter table public.community_posts enable row level security;
+alter table public.community_comments enable row level security;
+alter table public.community_post_likes enable row level security;
+
+create policy "Public Read Posts" on public.community_posts for select using (true);
+create policy "Auth Insert Posts" on public.community_posts for insert to authenticated with check (auth.uid() = user_id);
+create policy "Public Read Comments" on public.community_comments for select using (true);
+create policy "Auth Insert Comments" on public.community_comments for insert to authenticated with check (auth.uid() = user_id);
+create policy "Public Read Likes" on public.community_post_likes for select using (true);
+create policy "Auth Insert Likes" on public.community_post_likes for insert to authenticated with check (auth.uid() = user_id);
+
+-- 8. RPC: Increment Post Likes
+create or replace function increment_post_likes(post_row_id uuid)
+returns void
+language plpgsql
+security definer
+as $$
+begin
+  update public.community_posts
+  set likes_count = likes_count + 1
+  where id = post_row_id;
+end;
+$$;

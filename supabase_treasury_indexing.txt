@@ -1,0 +1,86 @@
+
+-- =================================================================
+-- JOURNEY APP: TREASURY INDEXING & STATS UPGRADE (v10.0)
+-- =================================================================
+
+BEGIN;
+
+-- 1. ENHANCE INDEXING FOR PERFORMANCE
+CREATE INDEX IF NOT EXISTS idx_users_total_points_desc ON public.users(total_points DESC);
+CREATE INDEX IF NOT EXISTS idx_avatar_history_attached_xp ON public.avatar_history(attached_xp);
+CREATE INDEX IF NOT EXISTS idx_transactions_type_created ON public.transactions(type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_transactions_sender ON public.transactions(sender_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_receiver ON public.transactions(receiver_id);
+
+-- 2. UPDATE DASHBOARD STATS RPC
+-- Now separates Liquid vs Asset Wealth for accurate "Circulating Supply"
+CREATE OR REPLACE FUNCTION get_treasury_dashboard_stats()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_balance bigint;
+    v_volume bigint;
+    v_liquid_supply bigint;
+    v_asset_supply bigint;
+    v_tx_count int;
+    v_holders jsonb;
+    v_txs jsonb;
+BEGIN
+    -- 1. Treasury Basics (System Funds)
+    SELECT balance, total_volume INTO v_balance, v_volume FROM public.treasury WHERE id = 1;
+    
+    -- 2. Liquid Supply (Wallet Balances)
+    SELECT COALESCE(sum(total_points), 0) INTO v_liquid_supply FROM public.users;
+
+    -- 3. Asset Supply (Locked in Artifacts)
+    SELECT COALESCE(sum(attached_xp), 0) INTO v_asset_supply FROM public.avatar_history;
+    
+    -- 4. Transactions Count
+    SELECT count(*) INTO v_tx_count FROM public.transactions;
+
+    -- 5. Top Holders (Whales based on NET WORTH)
+    -- Calculates rank based on Wallet + Inventory Value
+    SELECT jsonb_agg(t) INTO v_holders FROM (
+        SELECT 
+            u.username, 
+            u.avatar, 
+            u.archetype,
+            (u.total_points + COALESCE(SUM(ah.attached_xp), 0)) as net_worth,
+            u.total_points as liquid,
+            COALESCE(SUM(ah.attached_xp), 0) as assets
+        FROM public.users u
+        LEFT JOIN public.avatar_history ah ON u.id = ah.user_id
+        GROUP BY u.id
+        ORDER BY 4 DESC 
+        LIMIT 10
+    ) t;
+
+    -- 6. Recent Transactions
+    SELECT jsonb_agg(t) INTO v_txs FROM (
+        SELECT 
+            tx.id, tx.amount, tx.type, tx.created_at,
+            u_send.username as sender_name,
+            u_recv.username as receiver_name
+        FROM public.transactions tx
+        LEFT JOIN public.users u_send ON tx.sender_id = u_send.id
+        LEFT JOIN public.users u_recv ON tx.receiver_id = u_recv.id
+        ORDER BY tx.created_at DESC
+        LIMIT 20
+    ) t;
+
+    RETURN jsonb_build_object(
+        'balance', COALESCE(v_balance, 0),
+        'volume', COALESCE(v_volume, 0),
+        'liquid_supply', v_liquid_supply,
+        'asset_supply', v_asset_supply,
+        'net_worth', (v_liquid_supply + v_asset_supply),
+        'tx_count', COALESCE(v_tx_count, 0),
+        'holders', COALESCE(v_holders, '[]'::jsonb),
+        'transactions', COALESCE(v_txs, '[]'::jsonb)
+    );
+END;
+$$;
+
+COMMIT;

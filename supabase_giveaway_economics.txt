@@ -1,0 +1,140 @@
+
+-- =================================================================
+-- GIVEAWAY ECONOMICS PROTOCOL (70/30 Split & Fees & Types & Avatar Support)
+-- =================================================================
+
+BEGIN;
+
+-- 1. Ensure Transactions Ledger Exists (If running independently)
+CREATE TABLE IF NOT EXISTS public.transactions (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    sender_id uuid REFERENCES public.users(id), 
+    receiver_id uuid REFERENCES public.users(id),
+    amount bigint NOT NULL,
+    type text NOT NULL, -- 'giveaway_fee', 'giveaway_entry', 'giveaway_tax'
+    metadata jsonb,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- 2. Add New Columns for Giveaway Types & Vesting
+ALTER TABLE public.giveaways ADD COLUMN IF NOT EXISTS type text DEFAULT 'standard';
+ALTER TABLE public.giveaways ADD COLUMN IF NOT EXISTS is_vested boolean DEFAULT false;
+ALTER TABLE public.giveaways ADD COLUMN IF NOT EXISTS prize_asset_id uuid REFERENCES public.avatar_history(id);
+ALTER TABLE public.giveaways ADD COLUMN IF NOT EXISTS social_link text;
+
+-- 3. CREATE GIVEAWAY: Updated to support Type, Vesting, Asset & Social
+CREATE OR REPLACE FUNCTION create_giveaway(
+    p_title text, 
+    p_desc text, 
+    p_image text, 
+    p_fee int, 
+    p_winners int, 
+    p_end timestamp with time zone, 
+    p_poster_id uuid,
+    p_type text DEFAULT 'standard',
+    p_is_vested boolean DEFAULT false,
+    p_prize_asset_id uuid DEFAULT NULL,
+    p_social_link text DEFAULT NULL
+)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_xp bigint;
+    v_new_id uuid;
+    v_create_fee int := 500;
+BEGIN
+    -- Verify User Balance
+    SELECT total_points INTO v_user_xp FROM public.users WHERE id = p_poster_id;
+    
+    IF v_user_xp < 5000 THEN
+        RAISE EXCEPTION 'Minimum 5000 XP required to host a giveaway.';
+    END IF;
+
+    IF v_user_xp < v_create_fee THEN
+        RAISE EXCEPTION 'Insufficient XP to pay the 500 XP creation fee.';
+    END IF;
+
+    -- Verify Asset Ownership if provided
+    IF p_prize_asset_id IS NOT NULL THEN
+        IF NOT EXISTS (SELECT 1 FROM public.avatar_history WHERE id = p_prize_asset_id AND user_id = p_poster_id) THEN
+            RAISE EXCEPTION 'You do not own the selected artifact.';
+        END IF;
+    END IF;
+
+    -- Deduct Creation Fee from Poster
+    UPDATE public.users SET total_points = total_points - v_create_fee WHERE id = p_poster_id;
+    
+    -- Add Fee to Main Treasury
+    UPDATE public.treasury SET balance = balance + v_create_fee WHERE id = 1;
+
+    -- Log Ledger
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_poster_id, v_create_fee, 'giveaway_fee', jsonb_build_object('title', p_title));
+
+    -- Insert Giveaway
+    INSERT INTO public.giveaways (poster_id, title, description, image, entry_fee, winners_count, end_time, status, type, is_vested, prize_asset_id, social_link)
+    VALUES (p_poster_id, p_title, p_desc, p_image, p_fee, p_winners, p_end, 'active', p_type, p_is_vested, p_prize_asset_id, p_social_link)
+    RETURNING id INTO v_new_id;
+
+    RETURN v_new_id;
+END;
+$$;
+
+-- 4. ENTER GIVEAWAY: 70% to Poster, 30% to Treasury
+CREATE OR REPLACE FUNCTION enter_giveaway(p_giveaway_id uuid, p_user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_fee int;
+    v_poster_id uuid;
+    v_user_xp bigint;
+    v_user_activity int;
+    v_weight float8;
+    v_treasury_share int;
+    v_poster_share int;
+    v_title text;
+BEGIN
+    -- Check Giveaway Validity
+    SELECT entry_fee, poster_id, title INTO v_fee, v_poster_id, v_title FROM public.giveaways WHERE id = p_giveaway_id AND status = 'active';
+    IF NOT FOUND THEN RAISE EXCEPTION 'Giveaway not found or inactive'; END IF;
+
+    -- Check User Balance
+    SELECT total_points, daily_points_earned INTO v_user_xp, v_user_activity FROM public.users WHERE id = p_user_id;
+    IF v_user_xp < v_fee THEN RAISE EXCEPTION 'Insufficient XP to enter.'; END IF;
+
+    -- Deduct Fee from Entrant
+    UPDATE public.users SET total_points = total_points - v_fee WHERE id = p_user_id;
+
+    -- Calculate Split (30% to Treasury, 70% to Poster)
+    v_treasury_share := floor(v_fee * 0.3);
+    v_poster_share := v_fee - v_treasury_share;
+
+    -- Distribute Funds
+    UPDATE public.treasury SET balance = balance + v_treasury_share WHERE id = 1;
+    UPDATE public.users SET total_points = total_points + v_poster_share WHERE id = v_poster_id;
+
+    -- Log Transactions
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_user_id, v_treasury_share, 'giveaway_tax', jsonb_build_object('giveaway', v_title));
+    
+    INSERT INTO public.transactions (sender_id, receiver_id, amount, type, metadata)
+    VALUES (p_user_id, v_poster_id, v_poster_share, 'giveaway_entry', jsonb_build_object('giveaway', v_title));
+
+    -- Join Logic (Weighted by Total XP + Daily Activity)
+    v_weight := (v_user_xp::float8 / 1000.0) + (v_user_activity::float8 / 10.0) + 1.0;
+    
+    INSERT INTO public.giveaway_participants (giveaway_id, user_id, xp_at_entry, activity_at_entry, weight)
+    VALUES (p_giveaway_id, p_user_id, v_user_xp, v_user_activity, v_weight);
+
+    -- Increment Participant Count
+    UPDATE public.giveaways SET participants_count = participants_count + 1 WHERE id = p_giveaway_id;
+
+    RETURN true;
+END;
+$$;
+
+COMMIT;

@@ -1,0 +1,139 @@
+
+-- =================================================================
+-- JOURNEY APP: COMMUNITY & FELLOWSHIP COMPLETE SYNC
+-- =================================================================
+
+BEGIN;
+
+-- 1. ENHANCE COMMUNITIES TABLE
+-- Ensure all progression and economy columns exist
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS total_xp bigint DEFAULT 0;
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS level int DEFAULT 1;
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS mission_progress int DEFAULT 0;
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS treasury_balance bigint DEFAULT 0;
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS total_achievements int DEFAULT 0;
+
+-- 2. ENHANCE POSTS TABLE
+ALTER TABLE public.community_posts ADD COLUMN IF NOT EXISTS prayer_count int DEFAULT 0;
+
+-- 3. CREATE TITHING LEDGER
+CREATE TABLE IF NOT EXISTS public.community_tithes (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    community_id uuid REFERENCES public.communities(id) ON DELETE CASCADE,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    amount int NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- Enable RLS for Tithes
+ALTER TABLE public.community_tithes ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public Read Tithes" ON public.community_tithes;
+CREATE POLICY "Public Read Tithes" ON public.community_tithes FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Auth Insert Tithes" ON public.community_tithes;
+CREATE POLICY "Auth Insert Tithes" ON public.community_tithes FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+-- 4. RPC: TITHE XP (The Offering Function)
+-- This function handles the transaction: deducts from user, adds to community, logs the event.
+CREATE OR REPLACE FUNCTION tithe_to_community(p_user_id uuid, p_community_id uuid, p_amount int)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_xp bigint;
+BEGIN
+    -- 1. Verify User Balance
+    SELECT total_points INTO v_user_xp FROM public.users WHERE id = p_user_id;
+    IF v_user_xp < p_amount THEN 
+        RAISE EXCEPTION 'Insufficient Spirit XP for offering.'; 
+        RETURN false; 
+    END IF;
+
+    -- 2. Deduct from User
+    UPDATE public.users 
+    SET total_points = total_points - p_amount 
+    WHERE id = p_user_id;
+
+    -- 3. Add to Community Treasury & XP
+    UPDATE public.communities 
+    SET treasury_balance = treasury_balance + p_amount,
+        total_xp = total_xp + p_amount
+    WHERE id = p_community_id;
+
+    -- 4. Log the Tithe
+    INSERT INTO public.community_tithes (community_id, user_id, amount)
+    VALUES (p_community_id, p_user_id, p_amount);
+
+    -- 5. Log Activity Feed
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (
+        p_user_id, 
+        'achievement', 
+        jsonb_build_object('title', 'Faithful Tither', 'icon', '🪙', 'reward', 0, 'community_id', p_community_id)
+    );
+
+    RETURN true;
+END;
+$$;
+
+-- 5. RPC: SYNC COMMUNITY LEVEL
+-- Recalculates the community level based on total accumulated XP.
+CREATE OR REPLACE FUNCTION sync_community_level(p_community_id uuid)
+RETURNS int
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_xp bigint;
+    v_level int;
+BEGIN
+    SELECT total_xp INTO v_xp FROM public.communities WHERE id = p_community_id;
+    
+    -- Leveling Curve:
+    -- Lvl 1: 0 - 9,999
+    -- Lvl 2: 10,000 - 24,999
+    -- Lvl 3: 25,000 - 49,999
+    -- Lvl 4: 50,000 - 99,999
+    -- Lvl 5+: 100,000+ (Every 100k adds a level)
+    
+    IF v_xp < 10000 THEN v_level := 1;
+    ELSIF v_xp < 25000 THEN v_level := 2;
+    ELSIF v_xp < 50000 THEN v_level := 3;
+    ELSIF v_xp < 100000 THEN v_level := 4;
+    ELSE v_level := 5 + floor((v_xp - 100000) / 100000);
+    END IF;
+
+    UPDATE public.communities SET level = v_level WHERE id = p_community_id;
+    
+    RETURN v_level;
+END;
+$$;
+
+-- 6. RPC: INCREMENT ACHIEVEMENTS
+-- Called when a member completes a Bible Activity
+CREATE OR REPLACE FUNCTION increment_community_achievements(p_community_id uuid, p_amount int)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE public.communities
+  SET total_achievements = total_achievements + p_amount
+  WHERE id = p_community_id;
+END;
+$$;
+
+-- 7. RPC: INCREMENT POST LIKES
+CREATE OR REPLACE FUNCTION increment_post_likes(post_row_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE public.community_posts
+  SET likes_count = likes_count + 1
+  WHERE id = post_row_id;
+END;
+$$;
+
+COMMIT;

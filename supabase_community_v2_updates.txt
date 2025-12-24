@@ -1,0 +1,84 @@
+
+-- ==========================================
+-- COMMUNITY V2: ASCENSION & STEWARDSHIP
+-- ==========================================
+
+BEGIN;
+
+-- 1. COMMUNITY STATS ENHANCEMENT
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS total_xp bigint DEFAULT 0;
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS level int DEFAULT 1;
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS mission_progress int DEFAULT 0;
+
+-- 2. TITHING LEDGER (Individual contributions)
+CREATE TABLE IF NOT EXISTS public.community_tithes (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    community_id uuid REFERENCES public.communities(id) ON DELETE CASCADE,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    amount int NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- 3. PRAYER WALL TRACKING (Specific for prayer type posts)
+ALTER TABLE public.community_posts ADD COLUMN IF NOT EXISTS prayer_count int DEFAULT 0;
+
+-- 4. RPC: TITHE XP (Transfer personal XP to Community Treasury)
+CREATE OR REPLACE FUNCTION tithe_to_community(p_user_id uuid, p_community_id uuid, p_amount int)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_xp bigint;
+BEGIN
+    -- Check user balance
+    SELECT total_points INTO v_user_xp FROM public.users WHERE id = p_user_id;
+    IF v_user_xp < p_amount THEN RETURN false; END IF;
+
+    -- Deduct from user
+    UPDATE public.users SET total_points = total_points - p_amount WHERE id = p_user_id;
+
+    -- Add to community stats
+    UPDATE public.communities 
+    SET treasury_balance = treasury_balance + p_amount,
+        total_xp = total_xp + p_amount
+    WHERE id = p_community_id;
+
+    -- Record tithing
+    INSERT INTO public.community_tithes (community_id, user_id, amount)
+    VALUES (p_community_id, p_user_id, p_amount);
+
+    -- Log to activity feed
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (p_user_id, 'achievement', jsonb_build_object('title', 'Faithful Tither', 'icon', '🪙', 'reward', 0));
+
+    RETURN true;
+END;
+$$;
+
+-- 5. RPC: UPDATE COMMUNITY LEVEL (Based on total_xp)
+CREATE OR REPLACE FUNCTION sync_community_level(p_community_id uuid)
+RETURNS int
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_xp bigint;
+    v_level int;
+BEGIN
+    SELECT total_xp INTO v_xp FROM public.communities WHERE id = p_community_id;
+    
+    -- Basic logic: Level 1 = 0, Level 2 = 10k, Level 3 = 25k, etc.
+    IF v_xp < 10000 THEN v_level := 1;
+    ELSIF v_xp < 25000 THEN v_level := 2;
+    ELSIF v_xp < 50000 THEN v_level := 3;
+    ELSIF v_xp < 100000 THEN v_level := 4;
+    ELSE v_level := 5 + floor((v_xp - 100000) / 100000);
+    END IF;
+
+    UPDATE public.communities SET level = v_level WHERE id = p_community_id;
+    RETURN v_level;
+END;
+$$;
+
+COMMIT;

@@ -1,0 +1,20 @@
+
+-- ==========================================
+-- SHARE & ACTIVITY FEED FIX
+-- ==========================================
+
+BEGIN;
+
+-- 1. Ensure Activity Feed is Writable by Users
+-- Drop existing policy if it might be restrictive
+DROP POLICY IF EXISTS "Auth Insert Activity" ON public.activity_feed;
+
+-- Re-create with correct check
+CREATE POLICY "Auth Insert Activity" ON public.activity_feed 
+FOR INSERT TO authenticated 
+WITH CHECK (auth.uid() = user_id);
+
+-- 2. Optional: Index for feed optimization if missing
+CREATE INDEX IF NOT EXISTS activity_feed_user_type_idx ON public.activity_feed (user_id, activity_type);
+
+COMMIT;

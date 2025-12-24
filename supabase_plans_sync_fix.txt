@@ -1,0 +1,91 @@
+
+-- =================================================================
+-- JOURNEY APP: USER PLANS SYNC FIX
+-- Corrects Primary Key structure and ensures robust UPSERT support.
+-- =================================================================
+
+BEGIN;
+
+-- 1. Ensure Table Structure is Correct
+CREATE TABLE IF NOT EXISTS public.user_plans (
+    id text NOT NULL,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    title text,
+    description text,
+    category text,
+    image text,
+    duration int,
+    progress int DEFAULT 0,
+    is_active boolean DEFAULT false,
+    start_date text,
+    last_completed_date text,
+    days_json jsonb DEFAULT '[]'::jsonb,
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+-- 2. Enforce Composite Primary Key (user_id, id)
+-- This allows multiple users to track the SAME default plan (e.g. 'gospel_30') independently.
+-- And allows unique custom plans per user.
+
+-- Drop existing constraints if they conflict (safe operation)
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'user_plans_pkey') THEN
+        ALTER TABLE public.user_plans DROP CONSTRAINT user_plans_pkey;
+    END IF;
+END $$;
+
+ALTER TABLE public.user_plans ADD PRIMARY KEY (user_id, id);
+
+-- 3. RLS Policies
+ALTER TABLE public.user_plans ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users Manage Plans" ON public.user_plans;
+CREATE POLICY "Users Manage Plans" ON public.user_plans 
+FOR ALL USING (auth.uid() = user_id);
+
+-- 4. Ensure complete_plan_stage RPC handles upserts correctly
+CREATE OR REPLACE FUNCTION complete_plan_stage(p_plan_id text, p_stage_no int)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_id uuid := auth.uid();
+BEGIN
+    -- A. Log the specific stage
+    -- Create table if missing (should be there from prev migrations but safety first)
+    CREATE TABLE IF NOT EXISTS public.user_plan_stages (
+        id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+        user_id uuid REFERENCES public.users(id) NOT NULL,
+        plan_id text NOT NULL,
+        stage_number int NOT NULL,
+        completed_at timestamp with time zone DEFAULT now(),
+        UNIQUE(user_id, plan_id, stage_number)
+    );
+    -- Enable RLS for stages
+    ALTER TABLE public.user_plan_stages ENABLE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS "Users Manage Stages" ON public.user_plan_stages;
+    CREATE POLICY "Users Manage Stages" ON public.user_plan_stages FOR ALL USING (auth.uid() = user_id);
+
+    INSERT INTO public.user_plan_stages (user_id, plan_id, stage_number)
+    VALUES (v_user_id, p_plan_id, p_stage_no)
+    ON CONFLICT (user_id, plan_id, stage_number) 
+    DO UPDATE SET completed_at = now(); 
+
+    -- B. Update parent plan progress
+    -- We assume the plan row already exists or is being created
+    -- We update progress to be AT LEAST the stage number just completed.
+    -- (This handles non-linear reading if we ever support it, though currently linear).
+    
+    INSERT INTO public.user_plans (user_id, id, progress, is_active, last_completed_date, updated_at)
+    VALUES (v_user_id, p_plan_id, p_stage_no, true, now(), now())
+    ON CONFLICT (user_id, id) 
+    DO UPDATE SET 
+        progress = GREATEST(user_plans.progress, EXCLUDED.progress),
+        last_completed_date = now(),
+        updated_at = now(),
+        is_active = true;
+END;
+$$;
+
+COMMIT;

@@ -1,0 +1,12 @@
+
+-- =================================================================
+-- MISSION DESCRIPTION UPDATE
+-- =================================================================
+
+BEGIN;
+
+UPDATE public.missions 
+SET description = 'View your profile.' 
+WHERE title = 'Spirit Mirror';
+
+COMMIT;

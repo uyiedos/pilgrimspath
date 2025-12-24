@@ -1,0 +1,34 @@
+
+-- ==========================================
+-- BROWSER ENHANCEMENTS
+-- ==========================================
+
+BEGIN;
+
+-- 1. Bookmarks Table
+CREATE TABLE IF NOT EXISTS public.user_bookmarks (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    url text NOT NULL,
+    title text,
+    icon text DEFAULT '🔖',
+    created_at timestamp with time zone DEFAULT now(),
+    UNIQUE(user_id, url)
+);
+
+-- 2. RLS
+ALTER TABLE public.user_bookmarks ENABLE ROW LEVEL SECURITY;
+
+-- Read Own
+DROP POLICY IF EXISTS "Users Read Own Bookmarks" ON public.user_bookmarks;
+CREATE POLICY "Users Read Own Bookmarks" ON public.user_bookmarks FOR SELECT USING (auth.uid() = user_id);
+
+-- Insert Own
+DROP POLICY IF EXISTS "Users Insert Own Bookmarks" ON public.user_bookmarks;
+CREATE POLICY "Users Insert Own Bookmarks" ON public.user_bookmarks FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+-- Delete Own
+DROP POLICY IF EXISTS "Users Delete Own Bookmarks" ON public.user_bookmarks;
+CREATE POLICY "Users Delete Own Bookmarks" ON public.user_bookmarks FOR DELETE USING (auth.uid() = user_id);
+
+COMMIT;

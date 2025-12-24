@@ -1,0 +1,154 @@
+
+-- =================================================================
+-- JOURNEY APP: STAKING ACHIEVEMENTS & AUTO-LOGGING
+-- =================================================================
+
+BEGIN;
+
+-- 1. UPDATE STAKE_XP RPC (Log 'First Deposit' Achievement)
+CREATE OR REPLACE FUNCTION stake_xp(p_user_id uuid, p_amount int, p_tier text)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_fee int := 100;
+    v_total_cost int;
+    v_user_balance bigint;
+    v_apy int;
+    v_lock_seconds int;
+    v_lock_end timestamp with time zone;
+    v_stake_id uuid;
+    v_is_first boolean := false;
+    v_is_tycoon boolean := false;
+    v_total_staked bigint;
+BEGIN
+    v_total_cost := p_amount + v_fee;
+
+    -- Determine APY & Lockup based on Tier
+    CASE p_tier
+        WHEN 'daily' THEN
+            v_apy := 5; v_lock_seconds := 0; 
+        WHEN 'weekly' THEN
+            v_apy := 15; v_lock_seconds := 604800;
+        WHEN 'monthly' THEN
+            v_apy := 40; v_lock_seconds := 2592000;
+        WHEN 'yearly' THEN
+            v_apy := 100; v_lock_seconds := 31536000;
+        ELSE
+            RAISE EXCEPTION 'Invalid staking tier';
+    END CASE;
+
+    -- Calculate Lock End
+    v_lock_end := now() + (v_lock_seconds || ' seconds')::interval;
+
+    -- Check Balance
+    SELECT total_points INTO v_user_balance FROM public.users WHERE id = p_user_id;
+    IF v_user_balance < v_total_cost THEN
+        RAISE EXCEPTION 'Insufficient Liquid XP';
+    END IF;
+
+    -- Check if first stake
+    IF NOT EXISTS (SELECT 1 FROM public.stakes WHERE user_id = p_user_id) THEN
+        v_is_first := true;
+        -- Grant Achievement
+        INSERT INTO public.unlocked_achievements (user_id, achievement_id) 
+        VALUES (p_user_id, 'vault_novice') ON CONFLICT DO NOTHING;
+        
+        -- Grant XP Reward (100 XP)
+        UPDATE public.users SET total_points = total_points + 100 WHERE id = p_user_id;
+        
+        -- Log Feed
+        INSERT INTO public.activity_feed (user_id, activity_type, details)
+        VALUES (p_user_id, 'achievement', '{"title": "First Deposit", "icon": "🏦", "reward": 100}'::jsonb);
+    END IF;
+
+    -- Transact
+    UPDATE public.users SET total_points = total_points - v_total_cost WHERE id = p_user_id;
+    UPDATE public.treasury SET balance = balance + v_fee WHERE id = 1;
+
+    INSERT INTO public.stakes (user_id, amount, tier, apy, lock_end_time)
+    VALUES (p_user_id, p_amount, p_tier, v_apy, v_lock_end)
+    RETURNING id INTO v_stake_id;
+
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_user_id, v_fee, 'staking_fee', jsonb_build_object('tier', p_tier, 'principal', p_amount));
+
+    -- Check Tycoon Status (>50k Staked)
+    SELECT sum(amount) INTO v_total_staked FROM public.stakes WHERE user_id = p_user_id AND status = 'active';
+    IF v_total_staked >= 50000 THEN
+        IF NOT EXISTS (SELECT 1 FROM public.unlocked_achievements WHERE user_id = p_user_id AND achievement_id = 'vault_tycoon') THEN
+            v_is_tycoon := true;
+            INSERT INTO public.unlocked_achievements (user_id, achievement_id) VALUES (p_user_id, 'vault_tycoon') ON CONFLICT DO NOTHING;
+            UPDATE public.users SET total_points = total_points + 1000 WHERE id = p_user_id;
+            INSERT INTO public.activity_feed (user_id, activity_type, details)
+            VALUES (p_user_id, 'achievement', '{"title": "Vault Tycoon", "icon": "💰", "reward": 1000}'::jsonb);
+        END IF;
+    END IF;
+
+    RETURN jsonb_build_object(
+        'success', true, 
+        'stake_id', v_stake_id, 
+        'is_first_stake', v_is_first,
+        'is_tycoon', v_is_tycoon
+    );
+END;
+$$;
+
+-- 2. UPDATE CLAIM REWARDS RPC (Log 'First Harvest' Achievement)
+CREATE OR REPLACE FUNCTION claim_stake_rewards(p_stake_id uuid, p_user_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_stake record;
+    v_seconds_diff numeric;
+    v_reward numeric;
+    v_reward_int int;
+    v_is_first boolean := false;
+BEGIN
+    SELECT * INTO v_stake FROM public.stakes WHERE id = p_stake_id AND user_id = p_user_id AND status = 'active';
+    
+    IF NOT FOUND THEN RAISE EXCEPTION 'Stake not active or found'; END IF;
+
+    -- Calculate time elapsed
+    v_seconds_diff := EXTRACT(EPOCH FROM (now() - v_stake.last_claim_time));
+    
+    IF v_seconds_diff < 60 THEN
+        RETURN jsonb_build_object('reward', 0, 'is_first_claim', false); -- Too soon
+    END IF;
+
+    -- Reward Formula
+    v_reward := (v_stake.amount::numeric * (v_stake.apy::numeric / 100.0) * (v_seconds_diff / 31536000.0));
+    v_reward_int := floor(v_reward)::int;
+
+    IF v_reward_int > 0 THEN
+        -- Check if first harvest globally for user
+        IF NOT EXISTS (SELECT 1 FROM public.unlocked_achievements WHERE user_id = p_user_id AND achievement_id = 'vault_harvester') THEN
+            v_is_first := true;
+            INSERT INTO public.unlocked_achievements (user_id, achievement_id) VALUES (p_user_id, 'vault_harvester') ON CONFLICT DO NOTHING;
+            UPDATE public.users SET total_points = total_points + 100 WHERE id = p_user_id;
+            INSERT INTO public.activity_feed (user_id, activity_type, details)
+            VALUES (p_user_id, 'achievement', '{"title": "First Harvest", "icon": "🌾", "reward": 100}'::jsonb);
+        END IF;
+
+        -- Update Stake
+        UPDATE public.stakes 
+        SET last_claim_time = now(), 
+            total_earned = total_earned + v_reward_int 
+        WHERE id = p_stake_id;
+
+        -- Pay User
+        UPDATE public.users SET total_points = total_points + v_reward_int WHERE id = p_user_id;
+
+        -- Log
+        INSERT INTO public.transactions (sender_id, receiver_id, amount, type, metadata)
+        VALUES (NULL, p_user_id, v_reward_int, 'staking_reward', jsonb_build_object('stake_id', p_stake_id));
+    END IF;
+
+    RETURN jsonb_build_object('reward', v_reward_int, 'is_first_claim', v_is_first);
+END;
+$$;
+
+COMMIT;

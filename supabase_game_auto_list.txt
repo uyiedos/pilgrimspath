@@ -1,0 +1,104 @@
+
+BEGIN;
+
+-- 1. UPDATE GAME ARTIFACT MINTING
+-- Now automatically lists the artifact for 260 XP (130% of 200 base value)
+CREATE OR REPLACE FUNCTION mint_level_artifact(
+    p_user_id uuid,
+    p_level_name text,
+    p_image_url text,
+    p_verse text
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_style_prompt text;
+    v_collection text := 'Game Artefact';
+    v_xp int := 200;
+    v_list_price int := 260; -- 200 * 1.3
+    v_art_id uuid;
+BEGIN
+    v_style_prompt := 'Memory of ' || p_level_name || ': ' || p_verse;
+
+    -- Insert into Avatar History (Inventory)
+    INSERT INTO public.avatar_history (
+        user_id, 
+        avatar_url, 
+        style_prompt, 
+        collection_name, 
+        attached_xp,
+        created_at
+    )
+    VALUES (
+        p_user_id, 
+        p_image_url, 
+        v_style_prompt, 
+        v_collection, 
+        v_xp,
+        now()
+    )
+    RETURNING id INTO v_art_id;
+
+    -- Auto-List on Marketplace
+    INSERT INTO public.marketplace_listings (
+        avatar_id, 
+        seller_id, 
+        price, 
+        attached_xp, 
+        status
+    )
+    VALUES (
+        v_art_id, 
+        p_user_id, 
+        v_list_price, 
+        v_xp, 
+        'active'
+    );
+
+    -- Log Activity
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (
+        p_user_id, 
+        'achievement', 
+        jsonb_build_object(
+            'title', 'Artifact Discovered', 
+            'icon', '💎', 
+            'reward', v_xp, 
+            'message', 'You found a Game Artefact: ' || p_level_name || '. Auto-listed for ' || v_list_price || ' XP.'
+        )
+    );
+END;
+$$;
+
+-- 2. BACKFILL: LIST EXISTING GAME ARTIFACTS
+-- Finds all "Game Artefact" items that are NOT currently listed and lists them.
+DO $$
+DECLARE
+    r record;
+BEGIN
+    FOR r IN 
+        SELECT id, user_id, attached_xp 
+        FROM public.avatar_history 
+        WHERE collection_name ILIKE '%game%' 
+        AND id NOT IN (SELECT avatar_id FROM public.marketplace_listings WHERE status = 'active')
+    LOOP
+        INSERT INTO public.marketplace_listings (
+            avatar_id, 
+            seller_id, 
+            price, 
+            attached_xp, 
+            status
+        )
+        VALUES (
+            r.id, 
+            r.user_id, 
+            floor(GREATEST(COALESCE(r.attached_xp, 200), 200) * 1.3), -- Ensure at least 200 base -> 260 list
+            GREATEST(COALESCE(r.attached_xp, 200), 200), 
+            'active'
+        );
+    END LOOP;
+END $$;
+
+COMMIT;

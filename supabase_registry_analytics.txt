@@ -1,0 +1,79 @@
+
+-- ==========================================
+-- REGISTRY ANALYTICS RPC
+-- ==========================================
+
+CREATE OR REPLACE FUNCTION get_registry_analytics()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    growth_data jsonb;
+    xp_data jsonb;
+    activity_data jsonb;
+    v_active_today int;
+    v_avg_xp int;
+    v_total_users int;
+    v_total_xp bigint;
+BEGIN
+    -- 1. Basic Stats
+    SELECT count(*) INTO v_total_users FROM public.users;
+    SELECT sum(total_points) INTO v_total_xp FROM public.users;
+    
+    -- Active Users (Mock logic if last_activity_date is null, otherwise real)
+    SELECT count(*) INTO v_active_today 
+    FROM public.users 
+    WHERE last_activity_date >= to_char(now() - interval '24 hours', 'YYYY-MM-DD');
+
+    SELECT floor(avg(total_points)) INTO v_avg_xp FROM public.users;
+
+    -- 2. Daily Growth (Group by joined_date string YYYY-MM-DD)
+    -- Limiting to last 7 entries for the chart
+    SELECT jsonb_agg(t) INTO growth_data FROM (
+        SELECT 
+            substring(joined_date from 6 for 5) as label, -- MM-DD
+            count(*) as value
+        FROM public.users
+        GROUP BY 1
+        ORDER BY 1 DESC
+        LIMIT 7
+    ) t;
+
+    -- 3. XP Distribution (by Activity Type from Feed)
+    SELECT jsonb_agg(t) INTO xp_data FROM (
+        SELECT 
+            CASE 
+                WHEN details->>'title' IS NOT NULL THEN details->>'title'
+                ELSE 'General'
+            END as label,
+            SUM(COALESCE((details->>'reward')::int, 0)) as value
+        FROM public.activity_feed
+        WHERE details->>'reward' IS NOT NULL
+        GROUP BY 1
+        ORDER BY 2 DESC
+        LIMIT 5
+    ) t;
+
+    -- 4. Activity Volume (By Type)
+    SELECT jsonb_agg(t) INTO activity_data FROM (
+        SELECT 
+            activity_type as label,
+            count(*) as value
+        FROM public.activity_feed
+        GROUP BY 1
+        ORDER BY 2 DESC
+        LIMIT 6
+    ) t;
+
+    RETURN jsonb_build_object(
+        'total_users', COALESCE(v_total_users, 0),
+        'total_xp', COALESCE(v_total_xp, 0),
+        'active_today', COALESCE(v_active_today, 0),
+        'avg_xp', COALESCE(v_avg_xp, 0),
+        'growth', COALESCE(growth_data, '[]'::jsonb),
+        'xp_dist', COALESCE(xp_data, '[]'::jsonb),
+        'activity_vol', COALESCE(activity_data, '[]'::jsonb)
+    );
+END;
+$$;

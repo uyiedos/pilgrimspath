@@ -1,0 +1,163 @@
+
+-- ==========================================
+-- MARKETPLACE XP INFUSION & STATS
+-- ==========================================
+
+-- 1. Add attached_xp column to listings
+ALTER TABLE public.marketplace_listings 
+ADD COLUMN IF NOT EXISTS attached_xp bigint DEFAULT 0;
+
+-- 2. New RPC: List Avatar (Deduct XP from Seller immediately)
+CREATE OR REPLACE FUNCTION list_avatar(p_avatar_id uuid, p_seller_id uuid, p_price bigint, p_attached_xp bigint)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_current_xp bigint;
+BEGIN
+    -- Verify ownership
+    IF NOT EXISTS (SELECT 1 FROM public.avatar_history WHERE id = p_avatar_id AND user_id = p_seller_id) THEN
+        RAISE EXCEPTION 'You do not own this avatar';
+    END IF;
+
+    -- Check seller XP balance
+    SELECT total_points INTO v_current_xp FROM public.users WHERE id = p_seller_id;
+    IF v_current_xp < p_attached_xp THEN
+        RAISE EXCEPTION 'Insufficient XP to infuse';
+    END IF;
+
+    -- Deduct Infused XP from Seller
+    UPDATE public.users SET total_points = total_points - p_attached_xp WHERE id = p_seller_id;
+
+    -- Create Listing
+    INSERT INTO public.marketplace_listings (avatar_id, seller_id, price, attached_xp, status)
+    VALUES (p_avatar_id, p_seller_id, p_price, p_attached_xp, 'active');
+
+    RETURN true;
+END;
+$$;
+
+-- 3. New RPC: Cancel Listing (Refund XP to Seller)
+CREATE OR REPLACE FUNCTION cancel_listing(p_listing_id uuid, p_user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_attached_xp bigint;
+BEGIN
+    -- Verify ownership of listing
+    SELECT attached_xp INTO v_attached_xp 
+    FROM public.marketplace_listings 
+    WHERE id = p_listing_id AND seller_id = p_user_id AND status = 'active';
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Listing not found or active';
+    END IF;
+
+    -- Refund XP
+    UPDATE public.users SET total_points = total_points + v_attached_xp WHERE id = p_user_id;
+
+    -- Update Listing Status
+    UPDATE public.marketplace_listings SET status = 'cancelled' WHERE id = p_listing_id;
+
+    RETURN true;
+END;
+$$;
+
+-- 4. Updated RPC: Buy Avatar (Transfer attached_xp to Buyer)
+CREATE OR REPLACE FUNCTION buy_avatar(p_listing_id uuid, p_buyer_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_seller_id uuid;
+    v_avatar_id uuid;
+    v_price bigint;
+    v_attached_xp bigint;
+    v_buyer_balance bigint;
+    v_fee bigint;
+    v_seller_share bigint;
+BEGIN
+    -- Get listing details
+    SELECT seller_id, avatar_id, price, attached_xp 
+    INTO v_seller_id, v_avatar_id, v_price, v_attached_xp
+    FROM public.marketplace_listings
+    WHERE id = p_listing_id AND status = 'active'
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Listing not found or no longer active';
+    END IF;
+
+    IF v_seller_id = p_buyer_id THEN
+        RAISE EXCEPTION 'Cannot buy your own avatar';
+    END IF;
+
+    -- Check buyer balance
+    SELECT total_points INTO v_buyer_balance
+    FROM public.users
+    WHERE id = p_buyer_id;
+
+    IF v_buyer_balance < v_price THEN
+        RAISE EXCEPTION 'Insufficient funds';
+    END IF;
+
+    -- Calculate splits
+    v_fee := floor(v_price * 0.30);
+    v_seller_share := v_price - v_fee;
+
+    -- Update Balances
+    -- 1. Deduct Price from Buyer, Add Infused XP
+    UPDATE public.users 
+    SET total_points = total_points - v_price + v_attached_xp 
+    WHERE id = p_buyer_id;
+
+    -- 2. Add Share to Seller (Seller already lost attached_xp at listing time)
+    UPDATE public.users 
+    SET total_points = total_points + v_seller_share 
+    WHERE id = v_seller_id;
+
+    -- 3. Add to Treasury
+    UPDATE public.treasury 
+    SET balance = balance + v_fee, total_volume = total_volume + v_price 
+    WHERE id = 1;
+
+    -- Transfer Ownership in History
+    UPDATE public.avatar_history SET user_id = p_buyer_id WHERE id = v_avatar_id;
+    
+    -- Close Listing
+    UPDATE public.marketplace_listings SET status = 'sold' WHERE id = p_listing_id;
+
+    -- Log Activity for Buyer
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (p_buyer_id, 'achievement', jsonb_build_object('title', 'Power Inherited', 'icon', '⚡', 'reward', v_attached_xp));
+
+    RETURN true;
+END;
+$$;
+
+-- 5. New RPC: Get Marketplace Stats
+CREATE OR REPLACE FUNCTION get_marketplace_stats()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_volume bigint;
+    v_active_count int;
+    v_unique_holders int;
+BEGIN
+    SELECT total_volume INTO v_volume FROM public.treasury WHERE id = 1;
+    SELECT count(*) INTO v_active_count FROM public.marketplace_listings WHERE status = 'active';
+    SELECT count(DISTINCT user_id) INTO v_unique_holders FROM public.avatar_history;
+
+    RETURN jsonb_build_object(
+        'volume', COALESCE(v_volume, 0),
+        'count', v_active_count,
+        'holders', v_unique_holders
+    );
+END;
+$$;
