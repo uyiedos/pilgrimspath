@@ -217,11 +217,15 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
 
         {/* HERO SECTION */}
         <div className="text-center mb-8 animate-fade-in max-w-2xl flex flex-col items-center">
-           <div className="w-24 h-24 md:w-32 md:h-32 mb-6 animate-float drop-shadow-[0_0_30px_rgba(255,215,0,0.3)]">
+           <div className="w-32 h-32 md:w-40 md:h-40 mb-6 animate-float drop-shadow-[0_0_40px_rgba(255,215,0,0.5)] bg-gradient-to-br from-yellow-500/20 to-yellow-600/20 p-2 rounded-2xl backdrop-blur-sm border border-yellow-500/30">
               <img 
                 src="/icon.png" 
                 alt="The Journey Logo" 
-                className="w-full h-full object-contain filter drop-shadow-xl rounded-xl"
+                className="w-full h-full object-contain filter drop-shadow-2xl rounded-xl"
+                style={{ 
+                  filter: 'drop-shadow(0 0 20px rgba(255, 215, 0, 0.8))',
+                  animation: 'float 3s ease-in-out infinite'
+                }}
               />
            </div>
            
