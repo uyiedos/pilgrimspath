@@ -1,0 +1,13 @@
+
+-- ==========================================
+-- RAFFLE REQUIREMENTS UPDATE
+-- ==========================================
+
+BEGIN;
+
+-- Add columns for external requirements (e.g., Follow on X)
+ALTER TABLE public.raffles 
+ADD COLUMN IF NOT EXISTS action_link text,
+ADD COLUMN IF NOT EXISTS action_label text DEFAULT 'Visit Sponsor';
+
+COMMIT;

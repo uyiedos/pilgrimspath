@@ -1,0 +1,39 @@
+
+-- =================================================================
+-- FIX: MISSING COLUMNS IN GIVEAWAY PARTICIPANTS
+-- Run this to resolve "column activity_at_entry does not exist" error
+-- =================================================================
+
+BEGIN;
+
+-- 1. Fix Giveaway Participants Table
+ALTER TABLE public.giveaway_participants 
+ADD COLUMN IF NOT EXISTS activity_at_entry int DEFAULT 0;
+
+ALTER TABLE public.giveaway_participants 
+ADD COLUMN IF NOT EXISTS xp_at_entry bigint DEFAULT 0;
+
+ALTER TABLE public.giveaway_participants 
+ADD COLUMN IF NOT EXISTS weight float8 DEFAULT 1.0;
+
+-- 2. Ensure Giveaways Table has all V2 features
+ALTER TABLE public.giveaways 
+ADD COLUMN IF NOT EXISTS type text DEFAULT 'standard';
+
+ALTER TABLE public.giveaways 
+ADD COLUMN IF NOT EXISTS is_vested boolean DEFAULT false;
+
+ALTER TABLE public.giveaways 
+ADD COLUMN IF NOT EXISTS prize_asset_id uuid REFERENCES public.avatar_history(id);
+
+ALTER TABLE public.giveaways 
+ADD COLUMN IF NOT EXISTS social_link text;
+
+ALTER TABLE public.giveaways 
+ADD COLUMN IF NOT EXISTS image text;
+
+-- 3. Re-apply Indexes just in case
+CREATE INDEX IF NOT EXISTS giveaway_participants_user_idx ON public.giveaway_participants(user_id);
+CREATE INDEX IF NOT EXISTS giveaways_status_idx ON public.giveaways(status);
+
+COMMIT;

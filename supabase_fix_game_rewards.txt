@@ -1,0 +1,88 @@
+
+-- =================================================================
+-- JOURNEY APP: FIX GAME REWARDS & PROGRESSION
+-- Ensures levels, verses, and artifacts are properly minted.
+-- =================================================================
+
+BEGIN;
+
+-- 1. Ensure user_progress exists and has RLS
+CREATE TABLE IF NOT EXISTS public.user_progress (
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  game_id text NOT NULL,
+  level_id int DEFAULT 1,
+  PRIMARY KEY (user_id, game_id)
+);
+
+ALTER TABLE public.user_progress ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Auth Manage Progress" ON public.user_progress;
+CREATE POLICY "Auth Manage Progress" ON public.user_progress FOR ALL USING (auth.uid() = user_id);
+
+-- 2. Ensure collected_verses exists and has RLS
+CREATE TABLE IF NOT EXISTS public.collected_verses (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  verse_text text NOT NULL
+);
+
+ALTER TABLE public.collected_verses ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Auth Manage Verses" ON public.collected_verses;
+CREATE POLICY "Auth Manage Verses" ON public.collected_verses FOR ALL USING (auth.uid() = user_id);
+
+-- 3. FIX: MINT LEVEL ARTIFACT RPC
+-- Now ensures it doesn't fail if activity feed is locked or missing columns
+CREATE OR REPLACE FUNCTION mint_level_artifact(
+    p_user_id uuid,
+    p_level_name text,
+    p_image_url text,
+    p_verse text
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_style_prompt text;
+    v_collection text := 'Game Artefact';
+    v_xp int := 200;
+BEGIN
+    v_style_prompt := 'Memory of ' || p_level_name || ': ' || p_verse;
+
+    -- Insert into Avatar History (Inventory)
+    INSERT INTO public.avatar_history (
+        user_id, 
+        avatar_url, 
+        style_prompt, 
+        collection_name, 
+        attached_xp,
+        created_at
+    )
+    VALUES (
+        p_user_id, 
+        p_image_url, 
+        v_style_prompt, 
+        v_collection, 
+        v_xp,
+        now()
+    );
+
+    -- Log Activity (Safe insert)
+    BEGIN
+        INSERT INTO public.activity_feed (user_id, activity_type, details)
+        VALUES (
+            p_user_id, 
+            'achievement', 
+            jsonb_build_object(
+                'title', 'Artifact Discovered', 
+                'icon', '💎', 
+                'reward', v_xp, 
+                'message', 'You found a Game Artefact: ' || p_level_name
+            )
+        );
+    EXCEPTION WHEN OTHERS THEN
+        -- Ignore activity log errors to prevent blocking the reward
+    END;
+END;
+$$;
+
+COMMIT;

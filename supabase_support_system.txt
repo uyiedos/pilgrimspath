@@ -1,0 +1,89 @@
+
+-- =================================================================
+-- JOURNEY APP: SUPPORT SYSTEM PROTOCOLS
+-- =================================================================
+
+BEGIN;
+
+-- 1. ENSURE TABLE EXISTS
+CREATE TABLE IF NOT EXISTS public.support_tickets (
+  id text NOT NULL PRIMARY KEY, -- User friendly ID like #SUP-1234
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  subject text NOT NULL,
+  category text NOT NULL,
+  status text DEFAULT 'open', -- open, in_progress, resolved, closed
+  created_at bigint NOT NULL,
+  last_updated bigint NOT NULL,
+  messages_json jsonb DEFAULT '[]'::jsonb
+);
+
+-- 2. INDEXES
+CREATE INDEX IF NOT EXISTS support_tickets_user_idx ON public.support_tickets(user_id);
+CREATE INDEX IF NOT EXISTS support_tickets_status_idx ON public.support_tickets(status);
+CREATE INDEX IF NOT EXISTS support_tickets_updated_idx ON public.support_tickets(last_updated DESC);
+
+-- 3. RLS POLICIES
+ALTER TABLE public.support_tickets ENABLE ROW LEVEL SECURITY;
+
+-- Users see only their own tickets
+DROP POLICY IF EXISTS "Users View Own Tickets" ON public.support_tickets;
+CREATE POLICY "Users View Own Tickets" ON public.support_tickets 
+FOR SELECT USING (auth.uid() = user_id);
+
+-- Users can create tickets
+DROP POLICY IF EXISTS "Users Create Tickets" ON public.support_tickets;
+CREATE POLICY "Users Create Tickets" ON public.support_tickets 
+FOR INSERT TO authenticated 
+WITH CHECK (auth.uid() = user_id);
+
+-- Admins can view ALL tickets
+DROP POLICY IF EXISTS "Admins View All Tickets" ON public.support_tickets;
+CREATE POLICY "Admins View All Tickets" ON public.support_tickets 
+FOR SELECT USING (
+  EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin')
+);
+
+-- Admins can update tickets
+DROP POLICY IF EXISTS "Admins Update Tickets" ON public.support_tickets;
+CREATE POLICY "Admins Update Tickets" ON public.support_tickets 
+FOR UPDATE TO authenticated 
+USING (
+  EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin')
+);
+
+-- 4. RPC: REPLY TO TICKET (Appends to JSON Array)
+CREATE OR REPLACE FUNCTION reply_to_ticket(
+    p_ticket_id text, 
+    p_message_object jsonb, 
+    p_new_status text
+)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_current_messages jsonb;
+BEGIN
+    -- Get current messages
+    SELECT messages_json INTO v_current_messages 
+    FROM public.support_tickets 
+    WHERE id = p_ticket_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Ticket not found';
+    END IF;
+
+    -- Append new message
+    -- We use the || operator to concatenate jsonb arrays
+    UPDATE public.support_tickets 
+    SET 
+        messages_json = v_current_messages || p_message_object,
+        status = p_new_status,
+        last_updated = (extract(epoch from now()) * 1000)::bigint
+    WHERE id = p_ticket_id;
+
+    RETURN true;
+END;
+$$;
+
+COMMIT;

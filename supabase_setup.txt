@@ -1,0 +1,333 @@
+
+-- Enable UUID extension
+create extension if not exists "uuid-ossp";
+
+-- ==========================================
+-- 1. TABLE DEFINITIONS (For Fresh Installs)
+-- ==========================================
+
+-- USERS
+create table if not exists public.users (
+  id uuid references auth.users not null primary key,
+  email text,
+  username text,
+  avatar text,
+  joined_date text,
+  total_points bigint default 0,
+  last_daily_claim bigint default 0,
+  badges text[] default '{}',
+  daily_points_earned int default 0,
+  last_activity_date text,
+  role text default 'user',
+  difficulty text default 'normal',
+  referral_code text unique,
+  referred_by text,
+  referrals_count int default 0,
+  archetype text
+);
+
+-- USER PROGRESS
+create table if not exists public.user_progress (
+  user_id uuid references public.users(id) not null,
+  game_id text not null,
+  level_id int default 1,
+  primary key (user_id, game_id)
+);
+
+-- COLLECTED VERSES
+create table if not exists public.collected_verses (
+  id uuid default uuid_generate_v4() primary key,
+  user_id uuid references public.users(id) not null,
+  verse_text text not null
+);
+
+-- UNLOCKED ACHIEVEMENTS
+create table if not exists public.unlocked_achievements (
+  id uuid default uuid_generate_v4() primary key,
+  user_id uuid references public.users(id) not null,
+  achievement_id text not null
+);
+
+-- USER PLANS
+create table if not exists public.user_plans (
+  id text not null, 
+  user_id uuid references public.users(id) not null,
+  title text,
+  description text,
+  category text,
+  image text,
+  duration int,
+  progress int default 0,
+  is_active boolean default false,
+  start_date text,
+  end_date text,
+  days_json jsonb,
+  updated_at text,
+  last_completed_date text,
+  primary key (user_id, id)
+);
+
+-- SUPPORT TICKETS
+create table if not exists public.support_tickets (
+  id text not null primary key,
+  user_id uuid references public.users(id) not null,
+  subject text,
+  category text,
+  status text,
+  created_at bigint,
+  last_updated bigint,
+  messages_json jsonb
+);
+
+-- CHAT MESSAGES
+create table if not exists public.chat_messages (
+  id uuid default uuid_generate_v4() primary key,
+  user_id uuid references public.users(id) not null,
+  username text not null,
+  avatar text,
+  message text not null,
+  reply_to_id uuid,
+  reply_context jsonb,
+  created_at timestamp with time zone default now(),
+  type text default 'chat'
+);
+
+-- SOCIAL INTERACTIONS
+create table if not exists public.social_interactions (
+  id uuid default uuid_generate_v4() primary key,
+  user_id uuid references public.users(id) not null,
+  action_type text not null,
+  entity_context text,
+  created_at timestamp with time zone default now()
+);
+
+-- JOURNAL ENTRIES
+create table if not exists public.journal_entries (
+  id uuid default uuid_generate_v4() primary key,
+  user_id uuid references public.users(id) not null,
+  type text not null, 
+  content text not null,
+  reference text, 
+  created_at timestamp with time zone default now()
+);
+
+-- AVATAR HISTORY
+create table if not exists public.avatar_history (
+  id uuid default uuid_generate_v4() primary key,
+  user_id uuid references public.users(id) not null,
+  avatar_url text not null,
+  style_prompt text,
+  created_at timestamp with time zone default now()
+);
+
+-- JOURNEY TV: VIDEOS
+create table if not exists public.videos (
+  id uuid default uuid_generate_v4() primary key,
+  user_id uuid references public.users(id) not null,
+  username text,
+  avatar text,
+  title text not null,
+  youtube_id text not null,
+  views int default 0,
+  likes int default 0,
+  created_at timestamp with time zone default now()
+);
+
+-- JOURNEY TV: VIDEO LIKES
+create table if not exists public.video_likes (
+  id uuid default uuid_generate_v4() primary key,
+  user_id uuid references public.users(id) not null,
+  video_id uuid references public.videos(id) not null,
+  created_at timestamp with time zone default now(),
+  unique(user_id, video_id)
+);
+
+-- ==========================================
+-- 2. SAFE MIGRATIONS (For Existing Tables)
+-- ==========================================
+
+-- Ensure USERS has all new columns
+alter table public.users add column if not exists difficulty text default 'normal';
+alter table public.users add column if not exists referral_code text unique;
+alter table public.users add column if not exists referred_by text;
+alter table public.users add column if not exists referrals_count int default 0;
+alter table public.users add column if not exists daily_points_earned int default 0;
+alter table public.users add column if not exists last_activity_date text;
+alter table public.users add column if not exists role text default 'user';
+alter table public.users add column if not exists archetype text;
+
+-- Ensure PLANS has completion tracking
+alter table public.user_plans add column if not exists last_completed_date text;
+
+-- Ensure CHAT supports types
+alter table public.chat_messages add column if not exists type text default 'chat';
+
+-- ==========================================
+-- 3. INDEXES
+-- ==========================================
+create index if not exists users_joined_date_idx on public.users (joined_date desc);
+create index if not exists users_total_points_idx on public.users (total_points);
+create index if not exists users_referral_code_idx on public.users (referral_code);
+create index if not exists social_interactions_action_idx on public.social_interactions (action_type);
+create index if not exists journal_entries_user_id_idx on public.journal_entries (user_id);
+create index if not exists avatar_history_user_id_idx on public.avatar_history (user_id);
+create index if not exists videos_created_at_idx on public.videos (created_at desc);
+create index if not exists video_likes_video_id_idx on public.video_likes (video_id);
+
+-- ==========================================
+-- 4. SECURITY POLICIES (RLS)
+-- ==========================================
+alter table public.users enable row level security;
+alter table public.user_progress enable row level security;
+alter table public.collected_verses enable row level security;
+alter table public.unlocked_achievements enable row level security;
+alter table public.user_plans enable row level security;
+alter table public.support_tickets enable row level security;
+alter table public.chat_messages enable row level security;
+alter table public.social_interactions enable row level security;
+alter table public.journal_entries enable row level security;
+alter table public.avatar_history enable row level security;
+alter table public.videos enable row level security;
+alter table public.video_likes enable row level security;
+
+-- USERS
+drop policy if exists "Public Access Users" on public.users;
+create policy "Public Access Users" on public.users for select using (true);
+
+drop policy if exists "Auth Update Users" on public.users;
+create policy "Auth Update Users" on public.users for update using (auth.uid() = id);
+
+drop policy if exists "Auth Insert Users" on public.users;
+create policy "Auth Insert Users" on public.users for insert with check (auth.uid() = id);
+
+-- GENERAL DATA
+drop policy if exists "Allow all access progress" on public.user_progress;
+create policy "Allow all access progress" on public.user_progress for all using (true) with check (true);
+
+drop policy if exists "Allow all access verses" on public.collected_verses;
+create policy "Allow all access verses" on public.collected_verses for all using (true) with check (true);
+
+drop policy if exists "Allow all access achievements" on public.unlocked_achievements;
+create policy "Allow all access achievements" on public.unlocked_achievements for all using (true) with check (true);
+
+drop policy if exists "Allow all access plans" on public.user_plans;
+create policy "Allow all access plans" on public.user_plans for all using (true) with check (true);
+
+drop policy if exists "Allow all access tickets" on public.support_tickets;
+create policy "Allow all access tickets" on public.support_tickets for all using (true) with check (true);
+
+-- CHAT
+drop policy if exists "Public Read Chat" on public.chat_messages;
+create policy "Public Read Chat" on public.chat_messages for select using (true);
+
+drop policy if exists "Auth Insert Chat" on public.chat_messages;
+create policy "Auth Insert Chat" on public.chat_messages for insert to authenticated with check (true);
+
+drop policy if exists "Admin Delete Chat" on public.chat_messages;
+create policy "Admin Delete Chat" on public.chat_messages for delete using (
+  exists (select 1 from public.users where id = auth.uid() and role = 'admin')
+);
+
+-- SOCIAL
+drop policy if exists "Auth Insert Social" on public.social_interactions;
+create policy "Auth Insert Social" on public.social_interactions for insert to authenticated with check (true);
+
+drop policy if exists "Public Read Social" on public.social_interactions;
+create policy "Public Read Social" on public.social_interactions for select using (true);
+
+-- JOURNAL
+drop policy if exists "Users manage own journal" on public.journal_entries;
+create policy "Users manage own journal" on public.journal_entries for all using (auth.uid() = user_id);
+
+-- AVATAR HISTORY
+drop policy if exists "Users manage own avatar history" on public.avatar_history;
+create policy "Users manage own avatar history" on public.avatar_history for all using (auth.uid() = user_id);
+
+-- JOURNEY TV
+drop policy if exists "Public Read Videos" on public.videos;
+create policy "Public Read Videos" on public.videos for select using (true);
+
+drop policy if exists "Auth Insert Videos" on public.videos;
+create policy "Auth Insert Videos" on public.videos for insert to authenticated with check (auth.uid() = user_id);
+
+drop policy if exists "Auth Insert Likes" on public.video_likes;
+create policy "Auth Insert Likes" on public.video_likes for insert to authenticated with check (auth.uid() = user_id);
+
+drop policy if exists "Users See Own Likes" on public.video_likes;
+create policy "Users See Own Likes" on public.video_likes for select using (auth.uid() = user_id);
+
+-- ==========================================
+-- 5. RPC FUNCTIONS
+-- ==========================================
+
+-- Claim Referral
+create or replace function public.claim_referral(code text, new_user_id uuid)
+returns boolean
+language plpgsql
+security definer
+as $$
+declare
+  referrer_id uuid;
+  already_referred text;
+begin
+  select referred_by into already_referred from public.users where id = new_user_id;
+  if already_referred is not null then return false; end if;
+
+  select id into referrer_id from public.users where referral_code = code limit 1;
+  if referrer_id is null or referrer_id = new_user_id then return false; end if;
+
+  update public.users set total_points = total_points + 500, referrals_count = referrals_count + 1 where id = referrer_id;
+  update public.users set total_points = total_points + 200, referred_by = code where id = new_user_id;
+  return true;
+end;
+$$;
+
+-- Increment Video Likes
+create or replace function increment_video_likes(vid_id uuid)
+returns void
+language plpgsql
+security definer
+as $$
+begin
+  update public.videos
+  set likes = likes + 1
+  where id = vid_id;
+end;
+$$;
+
+-- Award Creator XP
+create or replace function award_creator_xp(creator_id uuid, amount int)
+returns void
+language plpgsql
+security definer
+as $$
+begin
+  update public.users
+  set total_points = total_points + amount,
+      daily_points_earned = daily_points_earned + amount
+  where id = creator_id;
+end;
+$$;
+
+-- ==========================================
+-- 6. REALTIME & STORAGE
+-- ==========================================
+
+-- Realtime
+begin;
+  drop publication if exists supabase_realtime;
+  create publication supabase_realtime;
+commit;
+alter publication supabase_realtime add table public.chat_messages;
+
+-- Storage
+insert into storage.buckets (id, name, public) values ('journey_assets', 'journey_assets', true) on conflict (id) do nothing;
+
+drop policy if exists "Public Access" on storage.objects;
+create policy "Public Access" on storage.objects for select using ( bucket_id = 'journey_assets' );
+
+drop policy if exists "Auth Uploads" on storage.objects;
+create policy "Auth Uploads" on storage.objects for insert to authenticated with check ( bucket_id = 'journey_assets' );
+
+drop policy if exists "Auth Updates" on storage.objects;
+create policy "Auth Updates" on storage.objects for update to authenticated using ( bucket_id = 'journey_assets' );

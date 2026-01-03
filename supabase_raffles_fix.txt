@@ -1,0 +1,39 @@
+
+-- ==========================================
+-- RAFFLE SCHEMA & SECURITY REPAIR
+-- ==========================================
+
+BEGIN;
+
+-- 1. SCHEMA REPAIR
+-- Add missing columns safely (if they don't exist)
+ALTER TABLE public.raffles ADD COLUMN IF NOT EXISTS action_link text;
+ALTER TABLE public.raffles ADD COLUMN IF NOT EXISTS action_label text DEFAULT 'Visit Sponsor';
+ALTER TABLE public.raffles ADD COLUMN IF NOT EXISTS prize_xp int DEFAULT 0;
+
+-- 2. SECURITY REPAIR (RLS)
+ALTER TABLE public.raffles ENABLE ROW LEVEL SECURITY;
+
+-- Policy: Allow everyone to view raffles
+DROP POLICY IF EXISTS "Public Read Raffles" ON public.raffles;
+CREATE POLICY "Public Read Raffles" ON public.raffles 
+FOR SELECT USING (true);
+
+-- Policy: Allow ONLY Admins to create (Insert) raffles
+-- This fixes the "new row violates row-level security policy" error
+DROP POLICY IF EXISTS "Admin Insert Raffles" ON public.raffles;
+CREATE POLICY "Admin Insert Raffles" ON public.raffles 
+FOR INSERT TO authenticated 
+WITH CHECK (
+  EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin')
+);
+
+-- Policy: Allow ONLY Admins to update raffles (e.g. Draw Winners)
+DROP POLICY IF EXISTS "Admin Update Raffles" ON public.raffles;
+CREATE POLICY "Admin Update Raffles" ON public.raffles 
+FOR UPDATE TO authenticated 
+USING (
+  EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin')
+);
+
+COMMIT;

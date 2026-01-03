@@ -1,0 +1,41 @@
+
+-- ==========================================
+-- POPULATE REAL MISSIONS
+-- ==========================================
+
+BEGIN;
+
+-- 1. Clean up old/placeholder missions to avoid duplicates
+DELETE FROM public.user_mission_claims;
+DELETE FROM public.missions;
+
+-- 2. Insert DAILY Missions (Reset every 24h)
+INSERT INTO public.missions (title, description, type, reward_xp, icon, action_key, target_count) VALUES
+('Morning Manna', 'Read today''s Daily Devotional.', 'Daily', 50, '🍞', 'read_devotional', 1),
+('Fellowship Voice', 'Post a message in the Global Chat.', 'Daily', 25, '💬', 'chat', 1),
+('Seeker of Truth', 'Use the Browser to search for biblical wisdom.', 'Daily', 30, '🔍', 'browser_search', 1),
+('Spirit Mirror', 'View your Profile or adjust your Archetype.', 'Daily', 15, '🛡️', 'check_profile', 1),
+('Prayer Warrior', 'Visit the Prayer Room.', 'Daily', 40, '🕯️', 'visit_prayer', 1);
+
+-- 3. Insert WEEKLY Missions (Reset every Sunday)
+INSERT INTO public.missions (title, description, type, reward_xp, icon, action_key, target_count) VALUES
+('Master Builder', 'Forge 3 new Artifacts in the Sacred Forge.', 'Weekly', 500, '⚒️', 'forge', 3),
+('Faithful Tither', 'Contribute XP to a Community Treasury.', 'Weekly', 300, '🪙', 'tithe', 1),
+('Evangelist', 'Share 3 items (Devotionals or Artifacts).', 'Weekly', 250, '📢', 'share', 3),
+('Market Tycoon', 'Purchase 1 item from the Marketplace.', 'Weekly', 400, '🛒', 'market_buy', 1),
+('Hope Dealer', 'Enter 2 Raffles or Giveaways.', 'Weekly', 200, '🎟️', 'enter_raffle', 2),
+('Socialite', 'Post 10 messages in Chat or Community.', 'Weekly', 150, '💬', 'chat_10', 10);
+
+-- 4. Insert CAREER Missions (One-time Milestones)
+INSERT INTO public.missions (title, description, type, reward_xp, icon, action_key, target_count) VALUES
+('First Steps', 'Reach Level 2 (Seeker).', 'Career', 500, '🦶', 'level_2', 1),
+('Disciple', 'Reach Level 5 (Believer).', 'Career', 1500, '✝️', 'level_5', 1),
+('Shepherd', 'Reach Level 10 (Servant).', 'Career', 5000, '🐑', 'level_10', 1),
+('Scripture Hunter', 'Collect 10 Revealed Verses from gameplay.', 'Career', 1000, '📜', 'verses_10', 10),
+('Scholar', 'Collect 50 Revealed Verses.', 'Career', 5000, '📚', 'verses_50', 50),
+('Divine Architect', 'Forge 5 Items in the Studio.', 'Career', 2000, '🎨', 'forge_5', 5),
+('Community Pillar', 'Join a Community Ministry.', 'Career', 300, '🔥', 'join_community', 1),
+('Apostle', 'Invite 3 friends (Referrals).', 'Career', 3000, '🤝', 'referral_3', 3),
+('Chosen Soul', 'Win a Raffle or Giveaway.', 'Career', 2500, '👑', 'win_giveaway', 1);
+
+COMMIT;

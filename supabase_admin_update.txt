@@ -1,0 +1,83 @@
+
+-- =================================================================
+-- ADMIN COMMAND PROTOCOLS
+-- =================================================================
+
+BEGIN;
+
+-- 1. ADMIN GRANT XP (Minting)
+-- Adds XP to a user and logs it in the ledger as a 'reward'
+CREATE OR REPLACE FUNCTION admin_grant_xp(p_target_user_id uuid, p_amount int, p_reason text)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    -- Verify Admin Status of the caller
+    IF NOT EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin') THEN
+        RAISE EXCEPTION 'Access Denied: Admin Clearance Required';
+    END IF;
+
+    -- Update User
+    UPDATE public.users 
+    SET total_points = total_points + p_amount,
+        daily_points_earned = daily_points_earned + p_amount -- Optional: count towards daily?
+    WHERE id = p_target_user_id;
+
+    -- Log Transaction (Sender is NULL for System/Admin Mint)
+    INSERT INTO public.transactions (sender_id, receiver_id, amount, type, metadata)
+    VALUES (
+        NULL, 
+        p_target_user_id, 
+        p_amount, 
+        'reward', 
+        jsonb_build_object('reason', p_reason, 'admin_id', auth.uid())
+    );
+
+    -- Log Activity
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (
+        p_target_user_id, 
+        'achievement', 
+        jsonb_build_object('title', 'Divine Favor', 'icon', '✨', 'reward', p_amount, 'message', p_reason)
+    );
+
+    RETURN true;
+END;
+$$;
+
+-- 2. ADMIN CREATE OFFICIAL RAFFLE
+-- Creates a raffle sponsored by the system
+CREATE OR REPLACE FUNCTION admin_create_raffle(
+    p_title text, 
+    p_desc text, 
+    p_image text, 
+    p_fee int, 
+    p_winners int, 
+    p_end timestamp with time zone
+)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_new_id uuid;
+BEGIN
+    -- Verify Admin Status
+    IF NOT EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin') THEN
+        RAISE EXCEPTION 'Access Denied';
+    END IF;
+
+    INSERT INTO public.raffles (
+        sponsor_name, title, description, image, entry_fee, winners_count, status, end_time
+    )
+    VALUES (
+        'The Sanctuary', p_title, p_desc, p_image, p_fee, p_winners, 'active', p_end
+    )
+    RETURNING id INTO v_new_id;
+
+    RETURN v_new_id;
+END;
+$$;
+
+COMMIT;

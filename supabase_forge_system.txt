@@ -1,0 +1,194 @@
+
+-- =================================================================
+-- JOURNEY APP: SACRED FORGE & VALUE RETENTION UPDATE (FIXED)
+-- =================================================================
+
+BEGIN;
+
+-- 1. ADD VALUE STORAGE TO ARTIFACTS
+ALTER TABLE public.avatar_history 
+ADD COLUMN IF NOT EXISTS attached_xp bigint DEFAULT 0;
+
+-- 2. RPC: PAY FORGE COST
+DROP FUNCTION IF EXISTS pay_forge_cost(uuid, int);
+
+CREATE OR REPLACE FUNCTION pay_forge_cost(p_user_id uuid, p_amount int)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_current_points bigint;
+BEGIN
+  SELECT total_points INTO v_current_points FROM public.users WHERE id = p_user_id;
+  
+  IF v_current_points < p_amount THEN 
+    RETURN false; 
+  END IF;
+
+  -- Deduct from User (Burn)
+  UPDATE public.users 
+  SET total_points = total_points - p_amount 
+  WHERE id = p_user_id;
+
+  -- Log Transaction (Type: forge_creation)
+  -- No Treasury update here. The value creates the asset.
+  INSERT INTO public.transactions (sender_id, amount, type, metadata)
+  VALUES (p_user_id, p_amount, 'forge_creation', '{"destination": "artifact"}'::jsonb);
+
+  RETURN true;
+END;
+$$;
+
+-- 3. UPDATED RPC: LIST AVATAR (Respects Intrinsic Value)
+-- Total Listing Value = Artifact Existing XP + Seller Infusion
+-- Seller only pays for the Infusion.
+
+-- DROP OLD SIGNATURES TO PREVENT CONFLICTS
+DROP FUNCTION IF EXISTS list_avatar(uuid, uuid, bigint, bigint);
+
+CREATE OR REPLACE FUNCTION list_avatar(p_avatar_id uuid, p_seller_id uuid, p_price bigint, p_infusion_amount bigint)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_current_xp bigint;
+    v_intrinsic_xp bigint;
+    v_total_attached bigint;
+BEGIN
+    -- Verify ownership and get current intrinsic value
+    SELECT attached_xp INTO v_intrinsic_xp 
+    FROM public.avatar_history 
+    WHERE id = p_avatar_id AND user_id = p_seller_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'You do not own this artifact.';
+    END IF;
+
+    -- Handle nulls
+    v_intrinsic_xp := COALESCE(v_intrinsic_xp, 0);
+
+    -- Check seller balance for the INFUSION portion only
+    SELECT total_points INTO v_current_xp FROM public.users WHERE id = p_seller_id;
+    IF v_current_xp < p_infusion_amount THEN
+        RAISE EXCEPTION 'Insufficient XP for infusion.';
+    END IF;
+
+    -- Deduct Infusion Amount from Seller
+    IF p_infusion_amount > 0 THEN
+        UPDATE public.users SET total_points = total_points - p_infusion_amount WHERE id = p_seller_id;
+    END IF;
+
+    -- Calculate Total Value attached to the listing
+    v_total_attached := v_intrinsic_xp + p_infusion_amount;
+
+    -- Create Listing
+    INSERT INTO public.marketplace_listings (avatar_id, seller_id, price, attached_xp, status)
+    VALUES (p_avatar_id, p_seller_id, p_price, v_total_attached, 'active');
+
+    RETURN true;
+END;
+$$;
+
+-- 4. UPDATED RPC: BUY AVATAR (Consumes Value)
+-- Buyer pays Price. Buyer gets Item. Buyer ABSORBS the attached XP.
+-- The Item's attached_xp is reset to 0 because it has been absorbed.
+
+DROP FUNCTION IF EXISTS buy_avatar(uuid, uuid);
+
+CREATE OR REPLACE FUNCTION buy_avatar(p_listing_id uuid, p_buyer_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_seller_id uuid;
+    v_avatar_id uuid;
+    v_price bigint;
+    v_attached_xp bigint;
+    v_buyer_balance bigint;
+    v_fee bigint;
+    v_seller_share bigint;
+BEGIN
+    -- Get listing details
+    SELECT seller_id, avatar_id, price, attached_xp 
+    INTO v_seller_id, v_avatar_id, v_price, v_attached_xp
+    FROM public.marketplace_listings
+    WHERE id = p_listing_id AND status = 'active'
+    FOR UPDATE;
+
+    IF NOT FOUND THEN RAISE EXCEPTION 'Listing not found or active'; END IF;
+    IF v_seller_id = p_buyer_id THEN RAISE EXCEPTION 'Cannot buy your own avatar'; END IF;
+
+    -- Check buyer balance
+    SELECT total_points INTO v_buyer_balance FROM public.users WHERE id = p_buyer_id;
+    IF v_buyer_balance < v_price THEN RAISE EXCEPTION 'Insufficient funds'; END IF;
+
+    -- Calculate Fee (30%)
+    v_fee := floor(v_price * 0.30);
+    v_seller_share := v_price - v_fee;
+
+    -- 1. Money Transfer
+    -- Deduct Price from Buyer
+    UPDATE public.users SET total_points = total_points - v_price WHERE id = p_buyer_id;
+    -- Pay Seller
+    UPDATE public.users SET total_points = total_points + v_seller_share WHERE id = v_seller_id;
+    -- Pay Treasury
+    UPDATE public.treasury SET balance = balance + v_fee, total_volume = total_volume + v_price WHERE id = 1;
+
+    -- 2. Power Transfer (Absorption)
+    -- Add attached_xp to Buyer
+    IF v_attached_xp > 0 THEN
+        UPDATE public.users SET total_points = total_points + v_attached_xp WHERE id = p_buyer_id;
+    END IF;
+
+    -- 3. Asset Transfer
+    -- Reset attached_xp on the artifact to 0 (since it was absorbed)
+    UPDATE public.avatar_history 
+    SET user_id = p_buyer_id, attached_xp = 0 
+    WHERE id = v_avatar_id;
+    
+    -- Close Listing
+    UPDATE public.marketplace_listings SET status = 'sold' WHERE id = p_listing_id;
+
+    -- Log
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (p_buyer_id, 'achievement', jsonb_build_object('title', 'Artifact Absorbed', 'icon', '⚡', 'reward', v_attached_xp));
+
+    RETURN true;
+END;
+$$;
+
+-- 5. UPDATED RPC: CANCEL LISTING (Refunds Value)
+-- If cancelled, the intrinsic XP + infusion returns to the artifact.
+
+DROP FUNCTION IF EXISTS cancel_listing(uuid, uuid);
+
+CREATE OR REPLACE FUNCTION cancel_listing(p_listing_id uuid, p_user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_avatar_id uuid;
+    v_attached_xp bigint;
+BEGIN
+    SELECT avatar_id, attached_xp INTO v_avatar_id, v_attached_xp
+    FROM public.marketplace_listings 
+    WHERE id = p_listing_id AND seller_id = p_user_id AND status = 'active';
+
+    IF NOT FOUND THEN RAISE EXCEPTION 'Listing not found'; END IF;
+
+    -- Update Listing
+    UPDATE public.marketplace_listings SET status = 'cancelled' WHERE id = p_listing_id;
+
+    -- Return Value to Artifact (So it can be relisted or absorbed later)
+    -- We set the artifact's attached_xp to the full amount that was on the listing
+    UPDATE public.avatar_history SET attached_xp = v_attached_xp WHERE id = v_avatar_id;
+
+    RETURN true;
+END;
+$$;
+
+COMMIT;

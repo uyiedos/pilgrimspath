@@ -1,0 +1,62 @@
+
+-- =================================================================
+-- JOURNEY APP: MARKETPLACE STATS V2 (CREATION PULSE)
+-- =================================================================
+
+BEGIN;
+
+CREATE OR REPLACE FUNCTION get_marketplace_stats()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_volume bigint;
+    v_active_count int;
+    v_holders int;
+    v_creation_chart jsonb;
+    v_recent_activity jsonb;
+BEGIN
+    -- 1. Basic Metrics
+    SELECT total_volume INTO v_volume FROM public.treasury WHERE id = 1;
+    SELECT count(*) INTO v_active_count FROM public.marketplace_listings WHERE status = 'active';
+    SELECT count(DISTINCT user_id) INTO v_holders FROM public.avatar_history;
+
+    -- 2. Creation Pulse Chart (All Artifacts Created in last 14 days)
+    -- This ensures we always show data even if no sales have happened
+    SELECT jsonb_agg(t) INTO v_creation_chart FROM (
+        SELECT 
+            to_char(created_at, 'MM-DD') as label,
+            COUNT(*)::int as value
+        FROM public.avatar_history
+        WHERE created_at > now() - interval '14 days'
+        GROUP BY 1
+        ORDER BY 1 ASC
+    ) t;
+
+    -- 3. Recent activity remains sales-focused
+    SELECT jsonb_agg(t) INTO v_recent_activity FROM (
+        SELECT 
+            m.price,
+            ah.collection_name,
+            u.username as buyer,
+            m.created_at
+        FROM public.marketplace_listings m
+        JOIN public.avatar_history ah ON m.avatar_id = ah.id
+        JOIN public.users u ON ah.user_id = u.id
+        WHERE m.status = 'sold'
+        ORDER BY m.created_at DESC
+        LIMIT 5
+    ) t;
+
+    RETURN jsonb_build_object(
+        'volume', COALESCE(v_volume, 0),
+        'count', v_active_count,
+        'holders', v_holders,
+        'chart', COALESCE(v_creation_chart, '[]'::jsonb),
+        'activity', COALESCE(v_recent_activity, '[]'::jsonb)
+    );
+END;
+$$;
+
+COMMIT;

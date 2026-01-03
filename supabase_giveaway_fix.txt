@@ -1,0 +1,21 @@
+
+-- =================================================================
+-- GIVEAWAY PARTICIPATION VISIBILITY FIX
+-- Run this to allow users to see their own ticket counts in Giveaways
+-- =================================================================
+
+BEGIN;
+
+-- 1. Enable RLS on Giveaway Participants (Ensure it's on)
+ALTER TABLE public.giveaway_participants ENABLE ROW LEVEL SECURITY;
+
+-- 2. Add SELECT Policy
+-- Allow users to see their own participation records
+DROP POLICY IF EXISTS "Users View Own Giveaway Entries" ON public.giveaway_participants;
+CREATE POLICY "Users View Own Giveaway Entries" ON public.giveaway_participants 
+FOR SELECT USING (auth.uid() = user_id);
+
+-- 3. Ensure 'entry_count' exists (Just in case it was missed in previous partial updates)
+ALTER TABLE public.giveaway_participants ADD COLUMN IF NOT EXISTS entry_count int DEFAULT 1;
+
+COMMIT;

@@ -1,0 +1,122 @@
+
+-- =================================================================
+-- JOURNEY APP: RAFFLE SYSTEM REPAIR V2
+-- Run this to fix "Enter Raffle" issues.
+-- =================================================================
+
+BEGIN;
+
+-- 1. ENSURE COLUMNS EXIST
+ALTER TABLE public.raffle_participants 
+ADD COLUMN IF NOT EXISTS entry_count int DEFAULT 1;
+
+ALTER TABLE public.raffle_participants 
+ADD COLUMN IF NOT EXISTS weight float8 DEFAULT 1.0;
+
+ALTER TABLE public.raffle_participants 
+ADD COLUMN IF NOT EXISTS user_email text;
+
+ALTER TABLE public.raffles
+ADD COLUMN IF NOT EXISTS prize_xp int DEFAULT 0;
+
+-- 2. FIX UNIQUE CONSTRAINT (Critical for ON CONFLICT to work)
+-- We drop any existing constraints that might conflict and recreate a named one.
+ALTER TABLE public.raffle_participants 
+DROP CONSTRAINT IF EXISTS raffle_participants_raffle_id_user_id_key;
+
+ALTER TABLE public.raffle_participants 
+DROP CONSTRAINT IF EXISTS unique_participant_per_raffle;
+
+ALTER TABLE public.raffle_participants 
+ADD CONSTRAINT unique_participant_per_raffle UNIQUE (raffle_id, user_id);
+
+-- 3. RESET RLS POLICIES (Visibility Fix)
+ALTER TABLE public.raffle_participants ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users View Own Raffle Entries" ON public.raffle_participants;
+CREATE POLICY "Users View Own Raffle Entries" ON public.raffle_participants 
+FOR SELECT USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Auth Insert Raffle Entries" ON public.raffle_participants;
+CREATE POLICY "Auth Insert Raffle Entries" ON public.raffle_participants 
+FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "System Update Raffle Entries" ON public.raffle_participants;
+CREATE POLICY "System Update Raffle Entries" ON public.raffle_participants 
+FOR UPDATE TO authenticated USING (auth.uid() = user_id);
+
+-- 4. UPDATE RPC: ENTER OFFICIAL RAFFLE (Robust Version)
+CREATE OR REPLACE FUNCTION enter_official_raffle(p_raffle_id uuid, p_user_id uuid, p_quantity int DEFAULT 1)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_fee int;
+    v_total_cost int;
+    v_user_xp bigint;
+    v_user_activity int;
+    v_base_weight float8;
+    v_email text;
+    v_title text;
+    v_exists boolean;
+BEGIN
+    -- Input Validation
+    IF p_quantity < 1 THEN RAISE EXCEPTION 'Minimum 1 ticket required'; END IF;
+
+    -- 1. Get Raffle Details
+    SELECT entry_fee, title INTO v_fee, v_title 
+    FROM public.raffles 
+    WHERE id = p_raffle_id AND status = 'active';
+    
+    IF NOT FOUND THEN RAISE EXCEPTION 'Raffle not found or inactive'; END IF;
+
+    v_total_cost := v_fee * p_quantity;
+
+    -- 2. Check User Balance & Details
+    SELECT total_points, daily_points_earned, email 
+    INTO v_user_xp, v_user_activity, v_email 
+    FROM public.users WHERE id = p_user_id;
+    
+    IF COALESCE(v_user_xp, 0) < v_total_cost THEN 
+        RAISE EXCEPTION 'Insufficient XP (Need %, Have %)', v_total_cost, v_user_xp; 
+    END IF;
+
+    -- Check if user already entered (to manage participant count)
+    SELECT EXISTS(SELECT 1 FROM public.raffle_participants WHERE raffle_id = p_raffle_id AND user_id = p_user_id) INTO v_exists;
+
+    -- 3. Execute Transaction
+    -- Deduct from User
+    UPDATE public.users SET total_points = total_points - v_total_cost WHERE id = p_user_id;
+    -- Add to Treasury
+    UPDATE public.treasury SET balance = balance + v_total_cost WHERE id = 1;
+
+    -- 4. Calculate Weight (XP/2000 + Activity/20 + 1)
+    v_base_weight := (COALESCE(v_user_xp, 0)::float8 / 2000.0) + (COALESCE(v_user_activity, 0)::float8 / 20.0) + 1.0;
+
+    -- 5. Upsert Participant Record
+    INSERT INTO public.raffle_participants (
+        raffle_id, user_id, user_email, weight, entry_count
+    )
+    VALUES (
+        p_raffle_id, p_user_id, v_email, (v_base_weight * p_quantity), p_quantity
+    )
+    ON CONFLICT ON CONSTRAINT unique_participant_per_raffle
+    DO UPDATE SET 
+        entry_count = public.raffle_participants.entry_count + p_quantity,
+        weight = public.raffle_participants.weight + (v_base_weight * p_quantity);
+
+    -- 6. Update Stats
+    IF NOT v_exists THEN
+        UPDATE public.raffles SET participants_count = participants_count + 1 WHERE id = p_raffle_id;
+    END IF;
+
+    -- 7. Log Transaction
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_user_id, v_total_cost, 'raffle_entry', jsonb_build_object('raffle', v_title, 'tickets', p_quantity));
+
+    RETURN true;
+END;
+$$;
+
+COMMIT;

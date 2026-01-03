@@ -1,0 +1,75 @@
+
+-- ==========================================
+-- COMMUNITY FEATURE MIGRATION
+-- ==========================================
+
+-- 1. Create Communities Table
+create table if not exists public.communities (
+  id uuid default uuid_generate_v4() primary key,
+  name text not null,
+  description text,
+  type text not null, -- 'Church', 'Fellowship', 'Cell Group', 'Study Group', 'Mission'
+  image text,
+  leader_id uuid references public.users(id) not null,
+  member_count int default 1,
+  created_at timestamp with time zone default now()
+);
+
+-- 2. Create Members Table
+create table if not exists public.community_members (
+  id uuid default uuid_generate_v4() primary key,
+  community_id uuid references public.communities(id) on delete cascade not null,
+  user_id uuid references public.users(id) not null,
+  role text default 'member', -- 'leader', 'member', 'admin'
+  joined_at timestamp with time zone default now(),
+  unique(community_id, user_id)
+);
+
+-- 3. Indexes
+create index if not exists communities_type_idx on public.communities (type);
+create index if not exists community_members_user_id_idx on public.community_members (user_id);
+create index if not exists community_members_community_id_idx on public.community_members (community_id);
+
+-- 4. RLS Policies
+alter table public.communities enable row level security;
+alter table public.community_members enable row level security;
+
+-- Communities: Everyone can read
+create policy "Public Read Communities" on public.communities for select using (true);
+
+-- Communities: Authenticated users can insert
+create policy "Auth Insert Communities" on public.communities for insert to authenticated with check (auth.uid() = leader_id);
+
+-- Communities: Leaders can update
+create policy "Leader Update Communities" on public.communities for update using (auth.uid() = leader_id);
+
+-- Members: Public read (to see member counts/lists)
+create policy "Public Read Members" on public.community_members for select using (true);
+
+-- Members: Users can join (insert themselves)
+create policy "User Join Community" on public.community_members for insert to authenticated with check (auth.uid() = user_id);
+
+-- Members: Users can leave (delete themselves)
+create policy "User Leave Community" on public.community_members for delete using (auth.uid() = user_id);
+
+-- 5. RPC to Increment/Decrement Member Count
+create or replace function update_community_member_count()
+returns trigger
+language plpgsql
+security definer
+as $$
+begin
+  if (TG_OP = 'INSERT') then
+    update public.communities set member_count = member_count + 1 where id = new.community_id;
+    return new;
+  elsif (TG_OP = 'DELETE') then
+    update public.communities set member_count = member_count - 1 where id = old.community_id;
+    return old;
+  end if;
+  return null;
+end;
+$$;
+
+create trigger tr_update_community_member_count
+after insert or delete on public.community_members
+for each row execute function update_community_member_count();

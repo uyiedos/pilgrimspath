@@ -1,0 +1,60 @@
+
+-- =================================================================
+-- ADMIN PAYOUT & RAFFLE ENHANCEMENT
+-- =================================================================
+
+BEGIN;
+
+-- 1. Update Raffles table for XP Prizes
+ALTER TABLE public.raffles ADD COLUMN IF NOT EXISTS prize_xp int DEFAULT 0;
+
+-- 2. Treasury Payout Function
+-- Deducts from Treasury and grants to user. Logs as 'raffle_payout'
+CREATE OR REPLACE FUNCTION treasury_payout(p_target_user_id uuid, p_amount int, p_source_id uuid, p_reason text)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_treasury_bal bigint;
+BEGIN
+    -- Admin Check
+    IF NOT EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin') THEN
+        RAISE EXCEPTION 'Admin clearance required';
+    END IF;
+
+    -- Check Treasury
+    SELECT balance INTO v_treasury_bal FROM public.treasury WHERE id = 1;
+    IF v_treasury_bal < p_amount THEN
+        RAISE EXCEPTION 'Treasury funds insufficient';
+    END IF;
+
+    -- Deduct Treasury
+    UPDATE public.treasury SET balance = balance - p_amount WHERE id = 1;
+
+    -- Grant User
+    UPDATE public.users SET total_points = total_points + p_amount WHERE id = p_target_user_id;
+
+    -- Log Ledger
+    INSERT INTO public.transactions (sender_id, receiver_id, amount, type, metadata)
+    VALUES (
+        NULL, -- From Treasury
+        p_target_user_id, 
+        p_amount, 
+        'raffle_payout', 
+        jsonb_build_object('reason', p_reason, 'source_id', p_source_id)
+    );
+
+    -- Log Activity
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (
+        p_target_user_id, 
+        'achievement', 
+        jsonb_build_object('title', 'Raffle Victory', 'icon', '🏆', 'reward', p_amount, 'message', p_reason)
+    );
+
+    RETURN true;
+END;
+$$;
+
+COMMIT;

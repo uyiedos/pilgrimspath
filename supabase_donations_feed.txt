@@ -1,0 +1,56 @@
+
+-- =================================================================
+-- JOURNEY APP: PUBLIC DONATION FEED & STATS
+-- =================================================================
+
+BEGIN;
+
+-- 1. RPC: Get Public Donation Stats
+-- Returns Total Raised (approx USD) and list of recent approved donations.
+-- Hides email/user_id, only shows donor_name (or Anonymous) and amount.
+
+CREATE OR REPLACE FUNCTION get_public_donations()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_total float8;
+    v_recent jsonb;
+BEGIN
+    -- Calculate Total USD Value (Approximation for display)
+    -- Assuming conversion rates: NGN/1600 = USD roughly
+    SELECT SUM(
+        CASE 
+            WHEN currency = 'NGN' THEN amount / 1600 
+            WHEN currency = 'SOL' THEN amount * 140 -- Approx SOL price
+            WHEN currency = 'ETH' THEN amount * 2500 -- Approx ETH price
+            WHEN currency = 'BTC' THEN amount * 65000 -- Approx BTC price
+            ELSE amount 
+        END
+    ) INTO v_total
+    FROM public.donation_claims 
+    WHERE status = 'approved';
+
+    -- Get Recent 10 Approved Donations
+    SELECT jsonb_agg(t) INTO v_recent FROM (
+        SELECT 
+            COALESCE(donor_name, 'Anonymous') as name,
+            amount,
+            currency,
+            created_at,
+            reason
+        FROM public.donation_claims
+        WHERE status = 'approved'
+        ORDER BY created_at DESC
+        LIMIT 10
+    ) t;
+
+    RETURN jsonb_build_object(
+        'total_raised_usd', COALESCE(v_total, 0),
+        'recent', COALESCE(v_recent, '[]'::jsonb)
+    );
+END;
+$$;
+
+COMMIT;

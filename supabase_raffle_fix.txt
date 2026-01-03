@@ -1,0 +1,22 @@
+
+-- =================================================================
+-- RAFFLE PARTICIPATION VISIBILITY FIX
+-- Run this to allow users to see their own ticket counts
+-- =================================================================
+
+BEGIN;
+
+-- 1. Enable RLS on Raffle Participants (Ensure it's on)
+ALTER TABLE public.raffle_participants ENABLE ROW LEVEL SECURITY;
+
+-- 2. Add SELECT Policy (Missing in previous setup)
+-- Allow users to see their own participation records
+DROP POLICY IF EXISTS "Users View Own Raffle Entries" ON public.raffle_participants;
+CREATE POLICY "Users View Own Raffle Entries" ON public.raffle_participants 
+FOR SELECT USING (auth.uid() = user_id);
+
+-- Optional: Allow public read if you want a public "entrants list" later, 
+-- but for now private is safer/cleaner for logic.
+-- To see global counts, we rely on the `participants_count` column in `raffles` table.
+
+COMMIT;

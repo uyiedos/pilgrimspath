@@ -1,0 +1,659 @@
+
+-- =================================================================
+-- THE JOURNEY: MASTER MIGRATION SCRIPT (v8.4 STABLE)
+-- =================================================================
+-- Run this in the Supabase SQL Editor.
+-- This script is idempotent: it creates tables/columns only if they don't exist.
+-- Safe to run on existing databases to patch missing features.
+-- =================================================================
+
+BEGIN;
+
+-- 1. EXTENSIONS
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- =================================================================
+-- 2. CORE USERS & PROGRESSION
+-- =================================================================
+
+CREATE TABLE IF NOT EXISTS public.users (
+  id uuid REFERENCES auth.users NOT NULL PRIMARY KEY
+);
+
+-- Safe Column Updates for Users
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS username text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS avatar text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS joined_date text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS total_points bigint DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_daily_claim bigint DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS daily_points_earned int DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_activity_date text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS badges text[] DEFAULT '{}';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS role text DEFAULT 'user';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS difficulty text DEFAULT 'normal';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS referral_code text UNIQUE;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS referred_by text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS referrals_count int DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS archetype text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS sanctuary_background text;
+
+-- User Progress
+CREATE TABLE IF NOT EXISTS public.user_progress (
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  game_id text NOT NULL,
+  level_id int DEFAULT 1,
+  PRIMARY KEY (user_id, game_id)
+);
+
+-- Collected Verses
+CREATE TABLE IF NOT EXISTS public.collected_verses (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  verse_text text NOT NULL
+);
+
+-- Unlocked Achievements
+CREATE TABLE IF NOT EXISTS public.unlocked_achievements (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  achievement_id text NOT NULL
+);
+
+-- User Plans
+CREATE TABLE IF NOT EXISTS public.user_plans (
+  id text NOT NULL, 
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  PRIMARY KEY (user_id, id)
+);
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS title text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS description text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS category text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS image text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS duration int;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS progress int DEFAULT 0;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS is_active boolean DEFAULT false;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS start_date text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS end_date text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS days_json jsonb;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS updated_at text;
+ALTER TABLE public.user_plans ADD COLUMN IF NOT EXISTS last_completed_date text;
+
+-- Journal Entries
+CREATE TABLE IF NOT EXISTS public.journal_entries (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  type text NOT NULL, 
+  content text NOT NULL,
+  reference text, 
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- =================================================================
+-- 3. SOCIAL & GLOBAL
+-- =================================================================
+
+CREATE TABLE IF NOT EXISTS public.activity_feed (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  username text,
+  avatar text,
+  activity_type text NOT NULL, 
+  details jsonb,
+  created_at timestamp with time zone DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.chat_messages (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  username text NOT NULL,
+  avatar text,
+  message text NOT NULL,
+  created_at timestamp with time zone DEFAULT now()
+);
+ALTER TABLE public.chat_messages ADD COLUMN IF NOT EXISTS reply_to_id uuid;
+ALTER TABLE public.chat_messages ADD COLUMN IF NOT EXISTS reply_context jsonb;
+ALTER TABLE public.chat_messages ADD COLUMN IF NOT EXISTS type text DEFAULT 'chat';
+
+CREATE TABLE IF NOT EXISTS public.support_tickets (
+  id text NOT NULL PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  subject text,
+  category text,
+  status text,
+  created_at bigint,
+  last_updated bigint,
+  messages_json jsonb
+);
+
+CREATE TABLE IF NOT EXISTS public.social_interactions (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  action_type text NOT NULL,
+  entity_context text,
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- =================================================================
+-- 4. ECONOMY (FORGE & MARKETPLACE)
+-- =================================================================
+
+CREATE TABLE IF NOT EXISTS public.treasury (
+    id int PRIMARY KEY DEFAULT 1,
+    balance bigint DEFAULT 0,
+    total_volume bigint DEFAULT 0,
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT single_row CHECK (id = 1)
+);
+INSERT INTO public.treasury (id, balance) VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS public.avatar_history (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  avatar_url text NOT NULL,
+  style_prompt text,
+  created_at timestamp with time zone DEFAULT now()
+);
+ALTER TABLE public.avatar_history ADD COLUMN IF NOT EXISTS collection_name text DEFAULT 'Genesis';
+
+CREATE TABLE IF NOT EXISTS public.marketplace_listings (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    avatar_id uuid REFERENCES public.avatar_history(id) NOT NULL,
+    seller_id uuid REFERENCES public.users(id) NOT NULL,
+    price bigint NOT NULL CHECK (price >= 10),
+    status text DEFAULT 'active',
+    created_at timestamp with time zone DEFAULT now()
+);
+ALTER TABLE public.marketplace_listings ADD COLUMN IF NOT EXISTS attached_xp bigint DEFAULT 0;
+
+-- =================================================================
+-- 5. DEVOTIONALS & MEDIA
+-- =================================================================
+
+CREATE TABLE IF NOT EXISTS public.daily_devotionals (
+    day date PRIMARY KEY,
+    title text NOT NULL,
+    scripture text NOT NULL,
+    content text NOT NULL,
+    prayer text NOT NULL,
+    image_prompt text NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.user_devotional_completions (
+    user_id uuid REFERENCES public.users(id) ON DELETE CASCADE,
+    day date,
+    completed_at timestamp with time zone DEFAULT now(),
+    PRIMARY KEY (user_id, day)
+);
+
+CREATE TABLE IF NOT EXISTS public.videos (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  username text,
+  avatar text,
+  title text NOT NULL,
+  youtube_id text NOT NULL,
+  views int DEFAULT 0,
+  likes int DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now()
+);
+ALTER TABLE public.videos ADD COLUMN IF NOT EXISTS description text;
+ALTER TABLE public.videos ADD COLUMN IF NOT EXISTS source_reference text;
+ALTER TABLE public.videos ADD COLUMN IF NOT EXISTS category text DEFAULT 'General';
+
+CREATE TABLE IF NOT EXISTS public.video_likes (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  video_id uuid REFERENCES public.videos(id) NOT NULL,
+  created_at timestamp with time zone DEFAULT now(),
+  UNIQUE(user_id, video_id)
+);
+
+-- =================================================================
+-- 6. COMMUNITY V2
+-- =================================================================
+
+CREATE TABLE IF NOT EXISTS public.communities (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  name text NOT NULL,
+  description text,
+  type text NOT NULL,
+  image text,
+  leader_id uuid REFERENCES public.users(id) NOT NULL,
+  member_count int DEFAULT 1,
+  created_at timestamp with time zone DEFAULT now()
+);
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS treasury_balance bigint DEFAULT 0;
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS total_achievements int DEFAULT 0;
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS total_xp bigint DEFAULT 0;
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS level int DEFAULT 1;
+ALTER TABLE public.communities ADD COLUMN IF NOT EXISTS mission_progress int DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS public.community_members (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  community_id uuid REFERENCES public.communities(id) ON DELETE CASCADE NOT NULL,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  role text DEFAULT 'member',
+  joined_at timestamp with time zone DEFAULT now(),
+  UNIQUE(community_id, user_id)
+);
+ALTER TABLE public.community_members ADD COLUMN IF NOT EXISTS last_fee_paid_at timestamp with time zone DEFAULT now();
+
+CREATE TABLE IF NOT EXISTS public.community_posts (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  community_id uuid REFERENCES public.communities(id) ON DELETE CASCADE NOT NULL,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  content text NOT NULL,
+  type text DEFAULT 'general',
+  likes_count int DEFAULT 0,
+  comments_count int DEFAULT 0,
+  created_at timestamp with time zone DEFAULT now()
+);
+ALTER TABLE public.community_posts ADD COLUMN IF NOT EXISTS prayer_count int DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS public.community_comments (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  post_id uuid REFERENCES public.community_posts(id) ON DELETE CASCADE NOT NULL,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  content text NOT NULL,
+  created_at timestamp with time zone DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.community_post_likes (
+  post_id uuid REFERENCES public.community_posts(id) ON DELETE CASCADE NOT NULL,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  created_at timestamp with time zone DEFAULT now(),
+  PRIMARY KEY (post_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS public.community_tithes (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    community_id uuid REFERENCES public.communities(id) ON DELETE CASCADE,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    amount int NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- =================================================================
+-- 7. EVENTS (GIVEAWAYS & RAFFLES)
+-- =================================================================
+
+-- 7A. GIVEAWAYS TABLE
+CREATE TABLE IF NOT EXISTS public.giveaways (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    poster_id uuid REFERENCES public.users(id) NOT NULL,
+    title text NOT NULL,
+    description text,
+    image text,
+    entry_fee int DEFAULT 100,
+    winners_count int DEFAULT 1,
+    status text DEFAULT 'active',
+    end_time timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
+-- Ensure columns exist
+ALTER TABLE public.giveaways ADD COLUMN IF NOT EXISTS winner_ids uuid[] DEFAULT '{}';
+ALTER TABLE public.giveaways ADD COLUMN IF NOT EXISTS participants_count int DEFAULT 0;
+ALTER TABLE public.giveaways ADD COLUMN IF NOT EXISTS status text DEFAULT 'active';
+
+-- 7B. GIVEAWAY PARTICIPANTS
+CREATE TABLE IF NOT EXISTS public.giveaway_participants (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    giveaway_id uuid REFERENCES public.giveaways(id) ON DELETE CASCADE,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    created_at timestamp with time zone DEFAULT now(),
+    UNIQUE(giveaway_id, user_id)
+);
+-- Ensure columns exist
+ALTER TABLE public.giveaway_participants ADD COLUMN IF NOT EXISTS xp_at_entry bigint;
+ALTER TABLE public.giveaway_participants ADD COLUMN IF NOT EXISTS weight float8;
+
+-- 7C. RAFFLES TABLE (OFFICIAL)
+CREATE TABLE IF NOT EXISTS public.raffles (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    sponsor_name text DEFAULT 'The Journey',
+    title text NOT NULL,
+    description text,
+    image text,
+    entry_fee int DEFAULT 50,
+    winners_count int DEFAULT 1,
+    status text DEFAULT 'active',
+    end_time timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
+-- Ensure columns exist
+ALTER TABLE public.raffles ADD COLUMN IF NOT EXISTS winner_ids uuid[] DEFAULT '{}';
+ALTER TABLE public.raffles ADD COLUMN IF NOT EXISTS winner_emails text[] DEFAULT '{}';
+ALTER TABLE public.raffles ADD COLUMN IF NOT EXISTS participants_count int DEFAULT 0;
+
+-- 7D. RAFFLE PARTICIPANTS
+CREATE TABLE IF NOT EXISTS public.raffle_participants (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    raffle_id uuid REFERENCES public.raffles(id) ON DELETE CASCADE,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    created_at timestamp with time zone DEFAULT now(),
+    UNIQUE(raffle_id, user_id)
+);
+-- Ensure columns exist
+ALTER TABLE public.raffle_participants ADD COLUMN IF NOT EXISTS user_email text;
+ALTER TABLE public.raffle_participants ADD COLUMN IF NOT EXISTS weight float8;
+
+-- =================================================================
+-- 8. INDEXES & RLS POLICIES
+-- =================================================================
+
+CREATE INDEX IF NOT EXISTS users_total_points_idx ON public.users (total_points);
+CREATE INDEX IF NOT EXISTS activity_feed_created_at_idx ON public.activity_feed (created_at DESC);
+CREATE INDEX IF NOT EXISTS chat_created_at_idx ON public.chat_messages (created_at DESC);
+CREATE INDEX IF NOT EXISTS marketplace_status_idx ON public.marketplace_listings (status);
+
+-- Enable RLS
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_progress ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.collected_verses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.unlocked_achievements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_plans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.journal_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.activity_feed ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.chat_messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.support_tickets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.social_interactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.treasury ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.avatar_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.marketplace_listings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.daily_devotionals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_devotional_completions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.videos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.video_likes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.communities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.community_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.community_posts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.community_comments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.community_post_likes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.community_tithes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.giveaways ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.giveaway_participants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.raffles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.raffle_participants ENABLE ROW LEVEL SECURITY;
+
+-- Reset and Apply Policies (Idempotent approach)
+DO $$ BEGIN
+    -- USERS
+    DROP POLICY IF EXISTS "Public Read Users" ON public.users;
+    CREATE POLICY "Public Read Users" ON public.users FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Auth Update Users" ON public.users;
+    CREATE POLICY "Auth Update Users" ON public.users FOR UPDATE USING (auth.uid() = id);
+    DROP POLICY IF EXISTS "Auth Insert Users" ON public.users;
+    CREATE POLICY "Auth Insert Users" ON public.users FOR INSERT WITH CHECK (auth.uid() = id);
+
+    -- CHAT
+    DROP POLICY IF EXISTS "Public Read All" ON public.chat_messages;
+    CREATE POLICY "Public Read All" ON public.chat_messages FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Auth Insert Chat" ON public.chat_messages;
+    CREATE POLICY "Auth Insert Chat" ON public.chat_messages FOR INSERT WITH CHECK (true);
+
+    -- MARKETPLACE
+    DROP POLICY IF EXISTS "Public Read Listings" ON public.marketplace_listings;
+    CREATE POLICY "Public Read Listings" ON public.marketplace_listings FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Auth Insert Listings" ON public.marketplace_listings;
+    CREATE POLICY "Auth Insert Listings" ON public.marketplace_listings FOR INSERT TO authenticated WITH CHECK (auth.uid() = seller_id);
+    DROP POLICY IF EXISTS "Seller Update Listings" ON public.marketplace_listings;
+    CREATE POLICY "Seller Update Listings" ON public.marketplace_listings FOR UPDATE TO authenticated USING (auth.uid() = seller_id);
+
+    -- COMMUNITIES
+    DROP POLICY IF EXISTS "Public Read Communities" ON public.communities;
+    CREATE POLICY "Public Read Communities" ON public.communities FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Auth Insert Communities" ON public.communities;
+    CREATE POLICY "Auth Insert Communities" ON public.communities FOR INSERT TO authenticated WITH CHECK (auth.uid() = leader_id);
+    DROP POLICY IF EXISTS "Leader Update Communities" ON public.communities;
+    CREATE POLICY "Leader Update Communities" ON public.communities FOR UPDATE USING (auth.uid() = leader_id);
+
+    -- GIVEAWAYS
+    DROP POLICY IF EXISTS "Public Read Giveaways" ON public.giveaways;
+    CREATE POLICY "Public Read Giveaways" ON public.giveaways FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Auth Insert Giveaways" ON public.giveaways;
+    CREATE POLICY "Auth Insert Giveaways" ON public.giveaways FOR INSERT TO authenticated WITH CHECK (auth.uid() = poster_id);
+    
+    DROP POLICY IF EXISTS "Public Read Giveaway Participants" ON public.giveaway_participants;
+    CREATE POLICY "Public Read Giveaway Participants" ON public.giveaway_participants FOR SELECT USING (true);
+    DROP POLICY IF EXISTS "Auth Insert Giveaway Participants" ON public.giveaway_participants;
+    CREATE POLICY "Auth Insert Giveaway Participants" ON public.giveaway_participants FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+    -- RAFFLES
+    DROP POLICY IF EXISTS "Public Read Raffles" ON public.raffles;
+    CREATE POLICY "Public Read Raffles" ON public.raffles FOR SELECT USING (true);
+    
+    DROP POLICY IF EXISTS "Auth Insert Raffle Participants" ON public.raffle_participants;
+    CREATE POLICY "Auth Insert Raffle Participants" ON public.raffle_participants FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+END $$;
+
+-- =================================================================
+-- 9. RPC FUNCTIONS (GAME LOGIC)
+-- =================================================================
+
+-- 9A. SPEND POINTS (Core)
+CREATE OR REPLACE FUNCTION spend_points(p_user_id uuid, p_amount int)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE current_points bigint;
+BEGIN
+  SELECT total_points INTO current_points FROM public.users WHERE id = p_user_id;
+  IF current_points < p_amount THEN RETURN false; END IF;
+  UPDATE public.users SET total_points = total_points - p_amount WHERE id = p_user_id;
+  RETURN true;
+END;
+$$;
+
+-- 9B. MARKETPLACE: BUY AVATAR
+CREATE OR REPLACE FUNCTION buy_avatar(p_listing_id uuid, p_buyer_id uuid)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+    v_seller_id uuid; v_avatar_id uuid; v_price bigint; v_attached_xp bigint;
+    v_buyer_balance bigint; v_fee bigint; v_seller_share bigint;
+BEGIN
+    SELECT seller_id, avatar_id, price, attached_xp INTO v_seller_id, v_avatar_id, v_price, v_attached_xp
+    FROM public.marketplace_listings WHERE id = p_listing_id AND status = 'active' FOR UPDATE;
+
+    IF NOT FOUND THEN RAISE EXCEPTION 'Listing not found'; END IF;
+    IF v_seller_id = p_buyer_id THEN RAISE EXCEPTION 'Self-buying restricted'; END IF;
+
+    SELECT total_points INTO v_buyer_balance FROM public.users WHERE id = p_buyer_id;
+    IF v_buyer_balance < v_price THEN RAISE EXCEPTION 'Insufficient funds'; END IF;
+
+    v_fee := floor(v_price * 0.30);
+    v_seller_share := v_price - v_fee;
+
+    UPDATE public.users SET total_points = total_points - v_price + v_attached_xp WHERE id = p_buyer_id;
+    UPDATE public.users SET total_points = total_points + v_seller_share WHERE id = v_seller_id;
+    UPDATE public.treasury SET balance = balance + v_fee, total_volume = total_volume + v_price WHERE id = 1;
+
+    UPDATE public.avatar_history SET user_id = p_buyer_id WHERE id = v_avatar_id;
+    UPDATE public.marketplace_listings SET status = 'sold' WHERE id = p_listing_id;
+
+    RETURN true;
+END;
+$$;
+
+-- 9C. MARKETPLACE: LIST AVATAR
+CREATE OR REPLACE FUNCTION list_avatar(p_avatar_id uuid, p_seller_id uuid, p_price bigint, p_attached_xp bigint)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_current_xp bigint;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.avatar_history WHERE id = p_avatar_id AND user_id = p_seller_id) THEN
+        RAISE EXCEPTION 'Not owner';
+    END IF;
+    SELECT total_points INTO v_current_xp FROM public.users WHERE id = p_seller_id;
+    IF v_current_xp < p_attached_xp THEN RAISE EXCEPTION 'Insufficient XP'; END IF;
+    UPDATE public.users SET total_points = total_points - p_attached_xp WHERE id = p_seller_id;
+    INSERT INTO public.marketplace_listings (avatar_id, seller_id, price, attached_xp, status)
+    VALUES (p_avatar_id, p_seller_id, p_price, p_attached_xp, 'active');
+    RETURN true;
+END;
+$$;
+
+-- 9D. COMMUNITY: TITHE
+CREATE OR REPLACE FUNCTION tithe_to_community(p_user_id uuid, p_community_id uuid, p_amount int)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_user_xp bigint;
+BEGIN
+    SELECT total_points INTO v_user_xp FROM public.users WHERE id = p_user_id;
+    IF v_user_xp < p_amount THEN RETURN false; END IF;
+    
+    UPDATE public.users SET total_points = total_points - p_amount WHERE id = p_user_id;
+    
+    UPDATE public.communities 
+    SET treasury_balance = treasury_balance + p_amount, 
+        total_xp = total_xp + p_amount 
+    WHERE id = p_community_id;
+    
+    INSERT INTO public.community_tithes (community_id, user_id, amount) VALUES (p_community_id, p_user_id, p_amount);
+    
+    RETURN true;
+END;
+$$;
+
+-- 9E. COMMUNITY: SYNC LEVEL
+CREATE OR REPLACE FUNCTION sync_community_level(p_community_id uuid)
+RETURNS int LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_xp bigint; v_level int;
+BEGIN
+    SELECT total_xp INTO v_xp FROM public.communities WHERE id = p_community_id;
+    IF v_xp < 10000 THEN v_level := 1;
+    ELSIF v_xp < 25000 THEN v_level := 2;
+    ELSIF v_xp < 50000 THEN v_level := 3;
+    ELSIF v_xp < 100000 THEN v_level := 4;
+    ELSE v_level := 5 + floor((v_xp - 100000) / 100000);
+    END IF;
+    UPDATE public.communities SET level = v_level WHERE id = p_community_id;
+    RETURN v_level;
+END;
+$$;
+
+-- 9F. STATS
+CREATE OR REPLACE FUNCTION get_global_stats()
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_users int; v_xp bigint;
+BEGIN
+  SELECT count(*) INTO v_users FROM public.users;
+  SELECT sum(total_points) INTO v_xp FROM public.users;
+  RETURN jsonb_build_object('users', v_users, 'xp', COALESCE(v_xp, 0));
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION get_marketplace_stats()
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_vol bigint; v_count int; v_holders int;
+BEGIN
+    SELECT total_volume INTO v_vol FROM public.treasury WHERE id = 1;
+    SELECT count(*) INTO v_count FROM public.marketplace_listings WHERE status = 'active';
+    SELECT count(DISTINCT user_id) INTO v_holders FROM public.avatar_history;
+    RETURN jsonb_build_object('volume', COALESCE(v_vol, 0), 'count', v_count, 'holders', v_holders);
+END;
+$$;
+
+-- 9G. GIVEAWAYS: ENTER
+CREATE OR REPLACE FUNCTION enter_giveaway(p_giveaway_id uuid, p_user_id uuid)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_fee int; v_xp bigint; v_poster uuid;
+BEGIN
+    SELECT entry_fee, poster_id INTO v_fee, v_poster FROM public.giveaways WHERE id = p_giveaway_id AND status='active';
+    SELECT total_points INTO v_xp FROM public.users WHERE id = p_user_id;
+    IF v_xp < v_fee THEN RAISE EXCEPTION 'Insufficient XP'; END IF;
+    UPDATE public.users SET total_points = total_points - v_fee WHERE id = p_user_id;
+    UPDATE public.users SET total_points = total_points + floor(v_fee*0.7) WHERE id = v_poster;
+    UPDATE public.treasury SET balance = balance + floor(v_fee*0.3) WHERE id=1;
+    INSERT INTO public.giveaway_participants (giveaway_id, user_id) VALUES (p_giveaway_id, p_user_id);
+    UPDATE public.giveaways SET participants_count = participants_count + 1 WHERE id = p_giveaway_id;
+    RETURN true;
+END;
+$$;
+
+-- 9H. GIVEAWAYS: CREATE
+CREATE OR REPLACE FUNCTION create_giveaway(p_title text, p_desc text, p_image text, p_fee int, p_winners int, p_end timestamp with time zone, p_poster_id uuid)
+RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_new_id uuid; v_cost int := 500;
+BEGIN
+    -- Explicitly verify funds using spend_points or raise error
+    IF NOT spend_points(p_poster_id, v_cost) THEN
+        RAISE EXCEPTION 'Insufficient XP to post giveaway (Cost: 500)';
+    END IF;
+
+    INSERT INTO public.giveaways (poster_id, title, description, image, entry_fee, winners_count, end_time, status)
+    VALUES (p_poster_id, p_title, p_desc, p_image, p_fee, p_winners, p_end, 'active')
+    RETURNING id INTO v_new_id;
+    RETURN v_new_id;
+END;
+$$;
+
+-- 9I. RAFFLES: ENTER OFFICIAL
+CREATE OR REPLACE FUNCTION enter_official_raffle(p_raffle_id uuid, p_user_id uuid)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_fee int; v_xp bigint; v_email text;
+BEGIN
+    SELECT entry_fee INTO v_fee FROM public.raffles WHERE id=p_raffle_id AND status='active';
+    IF NOT FOUND THEN RAISE EXCEPTION 'Raffle closed'; END IF;
+
+    SELECT total_points, email INTO v_xp, v_email FROM public.users WHERE id = p_user_id;
+    IF v_xp < v_fee THEN RAISE EXCEPTION 'Insufficient XP'; END IF;
+
+    UPDATE public.users SET total_points = total_points - v_fee WHERE id = p_user_id;
+    UPDATE public.treasury SET balance = balance + v_fee WHERE id = 1;
+
+    INSERT INTO public.raffle_participants (raffle_id, user_id, user_email, weight)
+    VALUES (p_raffle_id, p_user_id, v_email, 1.0)
+    ON CONFLICT (raffle_id, user_id) DO NOTHING;
+
+    UPDATE public.raffles SET participants_count = participants_count + 1 WHERE id = p_raffle_id;
+    RETURN true;
+END;
+$$;
+
+-- 9J. UTILS
+CREATE OR REPLACE FUNCTION increment_post_likes(post_row_id uuid)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  UPDATE public.community_posts SET likes_count = likes_count + 1 WHERE id = post_row_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION increment_video_likes(vid_id uuid)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  UPDATE public.videos SET likes = likes + 1 WHERE id = vid_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION increment_community_achievements(p_community_id uuid, p_amount int)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  UPDATE public.communities SET total_achievements = total_achievements + p_amount WHERE id = p_community_id;
+END;
+$$;
+
+-- Trigger to maintain community counts
+CREATE OR REPLACE FUNCTION update_community_member_count()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  IF (TG_OP = 'INSERT') THEN
+    UPDATE public.communities SET member_count = member_count + 1 WHERE id = new.community_id;
+    RETURN new;
+  ELSIF (TG_OP = 'DELETE') THEN
+    UPDATE public.communities SET member_count = member_count - 1 WHERE id = old.community_id;
+    RETURN old;
+  END IF;
+  RETURN null;
+END;
+$$;
+DROP TRIGGER IF EXISTS tr_update_community_member_count ON public.community_members;
+CREATE TRIGGER tr_update_community_member_count AFTER INSERT OR DELETE ON public.community_members FOR EACH ROW EXECUTE FUNCTION update_community_member_count();
+
+-- =================================================================
+-- 10. STORAGE BUCKETS
+-- =================================================================
+INSERT INTO storage.buckets (id, name, public) VALUES ('journey_assets', 'journey_assets', true) ON CONFLICT (id) DO NOTHING;
+DROP POLICY IF EXISTS "Public Access" ON storage.objects;
+CREATE POLICY "Public Access" ON storage.objects FOR SELECT USING ( bucket_id = 'journey_assets' );
+DROP POLICY IF EXISTS "Auth Uploads" ON storage.objects;
+CREATE POLICY "Auth Uploads" ON storage.objects FOR INSERT TO authenticated WITH CHECK ( bucket_id = 'journey_assets' );
+
+COMMIT;

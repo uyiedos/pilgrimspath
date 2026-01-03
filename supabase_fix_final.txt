@@ -1,0 +1,127 @@
+
+-- =================================================================
+-- JOURNEY APP: FINAL REPAIR SCRIPT (v10.2)
+-- Run this in the Supabase SQL Editor to enable raffle entries.
+-- =================================================================
+
+BEGIN;
+
+-- 1. Ensure Participant Tables have 'entry_count'
+ALTER TABLE public.giveaway_participants 
+ADD COLUMN IF NOT EXISTS entry_count int DEFAULT 1;
+
+ALTER TABLE public.raffle_participants 
+ADD COLUMN IF NOT EXISTS entry_count int DEFAULT 1;
+
+-- 2. Repair 'enter_giveaway' Function
+CREATE OR REPLACE FUNCTION enter_giveaway(p_giveaway_id uuid, p_user_id uuid, p_quantity int DEFAULT 1)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_fee int;
+    v_poster_id uuid;
+    v_total_cost int;
+    v_user_xp bigint;
+    v_treasury_share int;
+    v_poster_share int;
+    v_title text;
+    v_exists boolean;
+BEGIN
+    -- Validate
+    IF p_quantity < 1 THEN RAISE EXCEPTION 'Minimum 1 ticket required'; END IF;
+
+    -- Get Giveaway Details
+    SELECT entry_fee, poster_id, title INTO v_fee, v_poster_id, v_title 
+    FROM public.giveaways WHERE id = p_giveaway_id AND status = 'active';
+    
+    IF NOT FOUND THEN RAISE EXCEPTION 'Giveaway not found or inactive'; END IF;
+
+    -- Calculate Cost
+    v_total_cost := v_fee * p_quantity;
+
+    -- Check User Balance
+    SELECT total_points INTO v_user_xp FROM public.users WHERE id = p_user_id;
+    IF v_user_xp < v_total_cost THEN RAISE EXCEPTION 'Insufficient XP'; END IF;
+
+    -- Check if user exists (for participant count update)
+    SELECT EXISTS(SELECT 1 FROM public.giveaway_participants WHERE giveaway_id = p_giveaway_id AND user_id = p_user_id) INTO v_exists;
+
+    -- Process Transaction
+    UPDATE public.users SET total_points = total_points - v_total_cost WHERE id = p_user_id;
+    
+    v_treasury_share := floor(v_total_cost * 0.3);
+    v_poster_share := v_total_cost - v_treasury_share;
+
+    UPDATE public.treasury SET balance = balance + v_treasury_share WHERE id = 1;
+    UPDATE public.users SET total_points = total_points + v_poster_share WHERE id = v_poster_id;
+
+    -- Record Entry (Upsert)
+    INSERT INTO public.giveaway_participants (giveaway_id, user_id, entry_count)
+    VALUES (p_giveaway_id, p_user_id, p_quantity)
+    ON CONFLICT (giveaway_id, user_id) 
+    DO UPDATE SET entry_count = giveaway_participants.entry_count + p_quantity;
+
+    -- Update Global Count (Only if new unique user)
+    IF NOT v_exists THEN
+        UPDATE public.giveaways SET participants_count = participants_count + 1 WHERE id = p_giveaway_id;
+    END IF;
+
+    -- Log to Ledger
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_user_id, v_total_cost, 'giveaway_entry', jsonb_build_object('title', v_title, 'tickets', p_quantity));
+
+    RETURN true;
+END;
+$$;
+
+-- 3. Repair 'enter_official_raffle' Function
+CREATE OR REPLACE FUNCTION enter_official_raffle(p_raffle_id uuid, p_user_id uuid, p_quantity int DEFAULT 1)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_fee int;
+    v_total_cost int;
+    v_user_xp bigint;
+    v_title text;
+    v_email text;
+    v_exists boolean;
+BEGIN
+    IF p_quantity < 1 THEN RAISE EXCEPTION 'Minimum 1 ticket required'; END IF;
+
+    SELECT entry_fee, title INTO v_fee, v_title FROM public.raffles WHERE id = p_raffle_id AND status = 'active';
+    IF NOT FOUND THEN RAISE EXCEPTION 'Raffle not found or inactive'; END IF;
+
+    v_total_cost := v_fee * p_quantity;
+
+    SELECT total_points, email INTO v_user_xp, v_email FROM public.users WHERE id = p_user_id;
+    IF v_user_xp < v_total_cost THEN RAISE EXCEPTION 'Insufficient XP'; END IF;
+
+    SELECT EXISTS(SELECT 1 FROM public.raffle_participants WHERE raffle_id = p_raffle_id AND user_id = p_user_id) INTO v_exists;
+
+    -- Deduct
+    UPDATE public.users SET total_points = total_points - v_total_cost WHERE id = p_user_id;
+    UPDATE public.treasury SET balance = balance + v_total_cost WHERE id = 1;
+
+    -- Record Entry
+    INSERT INTO public.raffle_participants (raffle_id, user_id, user_email, entry_count)
+    VALUES (p_raffle_id, p_user_id, v_email, p_quantity)
+    ON CONFLICT (raffle_id, user_id)
+    DO UPDATE SET entry_count = raffle_participants.entry_count + p_quantity;
+
+    IF NOT v_exists THEN
+        UPDATE public.raffles SET participants_count = participants_count + 1 WHERE id = p_raffle_id;
+    END IF;
+
+    -- Log
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_user_id, v_total_cost, 'raffle_entry', jsonb_build_object('title', v_title, 'tickets', p_quantity));
+
+    RETURN true;
+END;
+$$;
+
+COMMIT;

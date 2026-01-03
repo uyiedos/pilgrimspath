@@ -1,0 +1,28 @@
+
+-- ==========================================
+-- ACTIVITY LOGGING
+-- ==========================================
+
+create table if not exists public.activity_feed (
+  id uuid default uuid_generate_v4() primary key,
+  user_id uuid references public.users(id) not null,
+  username text,
+  avatar text,
+  activity_type text not null, -- 'levelup', 'achievement', 'badge', 'join', 'broadcast'
+  details jsonb, -- { "level": 5, "title": "Guardian", "item": "Prayer Warrior" }
+  created_at timestamp with time zone default now()
+);
+
+-- Indexes for performance
+create index if not exists activity_feed_created_at_idx on public.activity_feed (created_at desc);
+create index if not exists activity_feed_user_id_idx on public.activity_feed (user_id);
+create index if not exists activity_feed_type_idx on public.activity_feed (activity_type);
+
+-- RLS
+alter table public.activity_feed enable row level security;
+
+-- Public Read
+create policy "Public Read Activity" on public.activity_feed for select using (true);
+
+-- Auth Insert (Users log their own milestones)
+create policy "Auth Insert Activity" on public.activity_feed for insert to authenticated with check (auth.uid() = user_id);

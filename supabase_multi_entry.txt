@@ -1,0 +1,142 @@
+
+BEGIN;
+
+-- 1. ADD ENTRY COUNT COLUMNS
+ALTER TABLE public.giveaway_participants 
+ADD COLUMN IF NOT EXISTS entry_count int DEFAULT 1;
+
+ALTER TABLE public.raffle_participants 
+ADD COLUMN IF NOT EXISTS entry_count int DEFAULT 1;
+
+-- 2. UPDATE RPC: ENTER GIVEAWAY (Supports Multi-Entry)
+CREATE OR REPLACE FUNCTION enter_giveaway(p_giveaway_id uuid, p_user_id uuid, p_quantity int DEFAULT 1)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_fee int;
+    v_poster_id uuid;
+    v_user_xp bigint;
+    v_user_activity int;
+    v_base_weight float8;
+    v_total_cost int;
+    v_treasury_share int;
+    v_poster_share int;
+    v_title text;
+BEGIN
+    -- Validation
+    IF p_quantity < 1 THEN RAISE EXCEPTION 'Minimum 1 entry required'; END IF;
+
+    -- Check Giveaway
+    SELECT entry_fee, poster_id, title INTO v_fee, v_poster_id, v_title 
+    FROM public.giveaways WHERE id = p_giveaway_id AND status = 'active';
+    
+    IF NOT FOUND THEN RAISE EXCEPTION 'Giveaway not found or inactive'; END IF;
+
+    -- Calculate Cost
+    v_total_cost := v_fee * p_quantity;
+
+    -- Check Balance
+    SELECT total_points, daily_points_earned INTO v_user_xp, v_user_activity 
+    FROM public.users WHERE id = p_user_id;
+    
+    IF v_user_xp < v_total_cost THEN RAISE EXCEPTION 'Insufficient XP for % entries (Need % XP)', p_quantity, v_total_cost; END IF;
+
+    -- Deduct Fee
+    UPDATE public.users SET total_points = total_points - v_total_cost WHERE id = p_user_id;
+
+    -- Distribute Funds (30% Treasury, 70% Poster)
+    v_treasury_share := floor(v_total_cost * 0.3);
+    v_poster_share := v_total_cost - v_treasury_share;
+
+    UPDATE public.treasury SET balance = balance + v_treasury_share WHERE id = 1;
+    UPDATE public.users SET total_points = total_points + v_poster_share WHERE id = v_poster_id;
+
+    -- Log Transactions
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_user_id, v_treasury_share, 'giveaway_tax', jsonb_build_object('giveaway', v_title, 'entries', p_quantity));
+    
+    INSERT INTO public.transactions (sender_id, receiver_id, amount, type, metadata)
+    VALUES (p_user_id, v_poster_id, v_poster_share, 'giveaway_entry', jsonb_build_object('giveaway', v_title, 'entries', p_quantity));
+
+    -- Calculate Weight
+    -- Base weight per ticket based on user stats
+    v_base_weight := (v_user_xp::float8 / 1000.0) + (v_user_activity::float8 / 10.0) + 1.0;
+
+    -- Upsert Participant
+    INSERT INTO public.giveaway_participants (giveaway_id, user_id, xp_at_entry, activity_at_entry, weight, entry_count)
+    VALUES (
+        p_giveaway_id, 
+        p_user_id, 
+        v_user_xp, 
+        v_user_activity, 
+        (v_base_weight * p_quantity), -- Total weight = base * count
+        p_quantity
+    )
+    ON CONFLICT (giveaway_id, user_id) DO UPDATE SET
+        entry_count = giveaway_participants.entry_count + p_quantity,
+        weight = giveaway_participants.weight + (v_base_weight * p_quantity); -- Add new weight to existing
+
+    -- Update Participant Count (Only increments if new user, technically distinct count)
+    -- Ideally we track total tickets, but participants_count usually implies unique users. 
+    -- We'll leave it as is (logic handles it via ON CONFLICT not adding row count, effectively).
+    -- If row inserted, increment.
+    IF NOT EXISTS (SELECT 1 FROM public.giveaway_participants WHERE giveaway_id = p_giveaway_id AND user_id = p_user_id) THEN
+        UPDATE public.giveaways SET participants_count = participants_count + 1 WHERE id = p_giveaway_id;
+    END IF;
+
+    RETURN true;
+END;
+$$;
+
+-- 3. UPDATE RPC: ENTER OFFICIAL RAFFLE (Supports Multi-Entry)
+CREATE OR REPLACE FUNCTION enter_official_raffle(p_raffle_id uuid, p_user_id uuid, p_quantity int DEFAULT 1)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_fee int;
+    v_total_cost int;
+    v_user_xp bigint;
+    v_user_activity int;
+    v_base_weight float8;
+    v_email text;
+    v_title text;
+BEGIN
+    IF p_quantity < 1 THEN RAISE EXCEPTION 'Minimum 1 entry required'; END IF;
+
+    SELECT entry_fee, title INTO v_fee, v_title FROM public.raffles WHERE id = p_raffle_id AND status = 'active';
+    IF NOT FOUND THEN RAISE EXCEPTION 'Raffle not found or inactive'; END IF;
+
+    v_total_cost := v_fee * p_quantity;
+
+    SELECT total_points, daily_points_earned, email INTO v_user_xp, v_user_activity, v_email 
+    FROM public.users WHERE id = p_user_id;
+    
+    IF v_user_xp < v_total_cost THEN RAISE EXCEPTION 'Insufficient XP for % entries', p_quantity; END IF;
+
+    UPDATE public.users SET total_points = total_points - v_total_cost WHERE id = p_user_id;
+    UPDATE public.treasury SET balance = balance + v_total_cost WHERE id = 1;
+
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_user_id, v_total_cost, 'raffle_entry', jsonb_build_object('raffle', v_title, 'entries', p_quantity));
+
+    v_base_weight := (v_user_xp::float8 / 2000.0) + (v_user_activity::float8 / 20.0) + 1.0;
+
+    INSERT INTO public.raffle_participants (raffle_id, user_id, user_email, weight, entry_count)
+    VALUES (p_raffle_id, p_user_id, v_email, (v_base_weight * p_quantity), p_quantity)
+    ON CONFLICT (raffle_id, user_id) DO UPDATE SET
+        entry_count = raffle_participants.entry_count + p_quantity,
+        weight = raffle_participants.weight + (v_base_weight * p_quantity);
+
+    IF NOT EXISTS (SELECT 1 FROM public.raffle_participants WHERE raffle_id = p_raffle_id AND user_id = p_user_id) THEN
+        UPDATE public.raffles SET participants_count = participants_count + 1 WHERE id = p_raffle_id;
+    END IF;
+
+    RETURN true;
+END;
+$$;
+
+COMMIT;

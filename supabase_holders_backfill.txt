@@ -1,0 +1,17 @@
+
+-- =================================================================
+-- AVATAR HISTORY BACKFILL (GENESIS)
+-- Ensures every user has at least one avatar entry for correct Holder stats
+-- =================================================================
+
+INSERT INTO public.avatar_history (user_id, avatar_url, style_prompt, collection_name, created_at)
+SELECT 
+    id, 
+    avatar, 
+    'Genesis Pilgrim', 
+    'Genesis', 
+    COALESCE(joined_date::timestamptz, now())
+FROM public.users u
+WHERE NOT EXISTS (
+    SELECT 1 FROM public.avatar_history h WHERE h.user_id = u.id
+);

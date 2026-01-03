@@ -1,0 +1,185 @@
+
+-- =================================================================
+-- JOURNEY APP: ADMIN & TREASURY FIX (v9.5)
+-- Fixes blank Admin Dashboard by creating missing Ledger & RPCs
+-- =================================================================
+
+BEGIN;
+
+-- 1. CREATE TRANSACTIONS LEDGER (Required for Admin Overview)
+CREATE TABLE IF NOT EXISTS public.transactions (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    sender_id uuid REFERENCES public.users(id), -- Null if System/Treasury
+    receiver_id uuid REFERENCES public.users(id), -- Null if System/Treasury
+    amount bigint NOT NULL,
+    type text NOT NULL, -- 'reward', 'tithe', 'fee', 'purchase'
+    metadata jsonb,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- Index for speed
+CREATE INDEX IF NOT EXISTS transactions_created_at_idx ON public.transactions (created_at DESC);
+
+-- RLS: Admins see all, Users see their own
+ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Admin View All Transactions" ON public.transactions;
+CREATE POLICY "Admin View All Transactions" ON public.transactions FOR SELECT USING (
+    EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin')
+);
+
+DROP POLICY IF EXISTS "Users View Own Transactions" ON public.transactions;
+CREATE POLICY "Users View Own Transactions" ON public.transactions FOR SELECT USING (
+    auth.uid() = sender_id OR auth.uid() = receiver_id
+);
+
+-- 2. CREATE DASHBOARD STATS RPC (The missing link for AdminView)
+CREATE OR REPLACE FUNCTION get_treasury_dashboard_stats()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_balance bigint;
+    v_volume bigint;
+    v_circulation bigint;
+    v_tx_count int;
+    v_holders jsonb;
+    v_txs jsonb;
+BEGIN
+    -- 1. Treasury Basics
+    SELECT balance, total_volume INTO v_balance, v_volume FROM public.treasury WHERE id = 1;
+    
+    -- 2. Circulation (Sum of all user points)
+    SELECT sum(total_points) INTO v_circulation FROM public.users;
+    
+    -- 3. Transactions Count
+    SELECT count(*) INTO v_tx_count FROM public.transactions;
+
+    -- 4. Top Holders (Whales)
+    SELECT jsonb_agg(t) INTO v_holders FROM (
+        SELECT username, avatar, total_points, archetype 
+        FROM public.users 
+        ORDER BY total_points DESC 
+        LIMIT 10
+    ) t;
+
+    -- 5. Recent Transactions
+    SELECT jsonb_agg(t) INTO v_txs FROM (
+        SELECT 
+            tx.id, tx.amount, tx.type, tx.created_at,
+            u_send.username as sender_name,
+            u_recv.username as receiver_name
+        FROM public.transactions tx
+        LEFT JOIN public.users u_send ON tx.sender_id = u_send.id
+        LEFT JOIN public.users u_recv ON tx.receiver_id = u_recv.id
+        ORDER BY tx.created_at DESC
+        LIMIT 20
+    ) t;
+
+    -- Return JSON object matching frontend interface
+    RETURN jsonb_build_object(
+        'balance', COALESCE(v_balance, 0),
+        'volume', COALESCE(v_volume, 0),
+        'circulation', COALESCE(v_circulation, 0),
+        'tx_count', COALESCE(v_tx_count, 0),
+        'holders', COALESCE(v_holders, '[]'::jsonb),
+        'transactions', COALESCE(v_txs, '[]'::jsonb)
+    );
+END;
+$$;
+
+-- 3. REFRESH ADMIN COMMANDS (Logging to new Transactions table)
+
+-- Admin Grant XP (Minting)
+CREATE OR REPLACE FUNCTION admin_grant_xp(p_target_user_id uuid, p_amount int, p_reason text)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    -- Verify Admin
+    IF NOT EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin') THEN
+        RAISE EXCEPTION 'Access Denied: Admin Clearance Required';
+    END IF;
+
+    -- Update User
+    UPDATE public.users 
+    SET total_points = total_points + p_amount
+    WHERE id = p_target_user_id;
+
+    -- Log Transaction
+    INSERT INTO public.transactions (sender_id, receiver_id, amount, type, metadata)
+    VALUES (
+        NULL, -- System Mint
+        p_target_user_id, 
+        p_amount, 
+        'reward', 
+        jsonb_build_object('reason', p_reason, 'admin_id', auth.uid())
+    );
+
+    -- Log Activity
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (
+        p_target_user_id, 
+        'achievement', 
+        jsonb_build_object('title', 'Divine Favor', 'icon', '✨', 'reward', p_amount, 'message', p_reason)
+    );
+
+    RETURN true;
+END;
+$$;
+
+-- Treasury Payout (e.g. Raffle Wins)
+CREATE OR REPLACE FUNCTION treasury_payout(p_target_user_id uuid, p_amount int, p_source_id uuid, p_reason text)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_treasury_bal bigint;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin') THEN
+        RAISE EXCEPTION 'Admin clearance required';
+    END IF;
+
+    SELECT balance INTO v_treasury_bal FROM public.treasury WHERE id = 1;
+    IF v_treasury_bal < p_amount THEN
+        RAISE EXCEPTION 'Treasury funds insufficient';
+    END IF;
+
+    -- Move Funds
+    UPDATE public.treasury SET balance = balance - p_amount WHERE id = 1;
+    UPDATE public.users SET total_points = total_points + p_amount WHERE id = p_target_user_id;
+
+    -- Log
+    INSERT INTO public.transactions (sender_id, receiver_id, amount, type, metadata)
+    VALUES (
+        NULL, -- Treasury
+        p_target_user_id, 
+        p_amount, 
+        'payout', 
+        jsonb_build_object('reason', p_reason, 'source_id', p_source_id)
+    );
+
+    RETURN true;
+END;
+$$;
+
+-- Promote User RPC
+CREATE OR REPLACE FUNCTION promote_user(p_target_id uuid, p_new_role text)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin') THEN
+        RAISE EXCEPTION 'Access Denied';
+    END IF;
+
+    UPDATE public.users SET role = p_new_role WHERE id = p_target_id;
+    RETURN true;
+END;
+$$;
+
+COMMIT;

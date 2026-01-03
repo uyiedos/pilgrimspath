@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">The Journey</string>
+    <string name="title_activity_main">The Journey</string>
+    <string name="package_name">com.journey.pilgrimspath</string>
+    <string name="custom_url_scheme">com.journey.pilgrimspath</string>
+</resources>

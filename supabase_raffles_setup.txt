@@ -1,0 +1,80 @@
+
+-- ==========================================
+-- OFFICIAL RAFFLES SYSTEM SETUP
+-- ==========================================
+
+-- 1. Raffles Table (Admin/System driven)
+CREATE TABLE IF NOT EXISTS public.raffles (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    sponsor_name text DEFAULT 'The Journey',
+    title text NOT NULL,
+    description text,
+    image text,
+    entry_fee int DEFAULT 50,
+    winners_count int DEFAULT 1,
+    status text DEFAULT 'active', -- active, drawn, cancelled
+    end_time timestamp with time zone NOT NULL,
+    winner_ids uuid[] DEFAULT '{}',
+    winner_emails text[] DEFAULT '{}', -- Emails collected upon draw
+    participants_count int DEFAULT 0,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- 2. Raffle Participants
+CREATE TABLE IF NOT EXISTS public.raffle_participants (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    raffle_id uuid REFERENCES public.raffles(id) ON DELETE CASCADE,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    user_email text, -- Cached at entry for fulfillment
+    weight float8,
+    created_at timestamp with time zone DEFAULT now(),
+    UNIQUE(raffle_id, user_id)
+);
+
+-- 3. RLS
+ALTER TABLE public.raffles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.raffle_participants ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Public Read Raffles" ON public.raffles FOR SELECT USING (true);
+CREATE POLICY "Auth Join Raffle" ON public.raffle_participants FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+-- 4. RPC: Enter Official Raffle
+CREATE OR REPLACE FUNCTION enter_official_raffle(p_raffle_id uuid, p_user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_fee int;
+    v_user_xp bigint;
+    v_user_activity int;
+    v_weight float8;
+    v_email text;
+BEGIN
+    -- Check Raffle
+    SELECT entry_fee INTO v_fee FROM public.raffles WHERE id = p_raffle_id AND status = 'active';
+    IF NOT FOUND THEN RAISE EXCEPTION 'Raffle not found or inactive'; END IF;
+
+    -- Check User
+    SELECT total_points, daily_points_earned, email INTO v_user_xp, v_user_activity, v_email 
+    FROM public.users WHERE id = p_user_id;
+    IF v_user_xp < v_fee THEN RAISE EXCEPTION 'Insufficient XP'; END IF;
+
+    -- Deduct Fee
+    UPDATE public.users SET total_points = total_points - v_fee WHERE id = p_user_id;
+    
+    -- Treasury gets full fee for official raffles
+    UPDATE public.treasury SET balance = balance + v_fee WHERE id = 1;
+
+    -- Weighted Win Chance
+    v_weight := (v_user_xp::float8 / 2000.0) + (v_user_activity::float8 / 20.0) + 1.0;
+
+    -- Join
+    INSERT INTO public.raffle_participants (raffle_id, user_id, user_email, weight)
+    VALUES (p_raffle_id, p_user_id, v_email, v_weight);
+
+    UPDATE public.raffles SET participants_count = participants_count + 1 WHERE id = p_raffle_id;
+
+    RETURN true;
+END;
+$$;

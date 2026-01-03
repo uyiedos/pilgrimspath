@@ -1,0 +1,58 @@
+
+-- ==========================================
+-- MISSIONS & QUEST SYSTEM
+-- ==========================================
+
+BEGIN;
+
+-- 1. Missions Definition Table
+CREATE TABLE IF NOT EXISTS public.missions (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  title text NOT NULL,
+  description text,
+  type text NOT NULL, -- 'Daily', 'Weekly', 'Career'
+  reward_xp int DEFAULT 100,
+  icon text DEFAULT '📜',
+  action_key text, -- Used to map activity feed events (e.g., 'forge', 'chat')
+  target_count int DEFAULT 1,
+  created_at timestamp with time zone DEFAULT now()
+);
+
+-- 2. User Claims Tracker (To prevent double claiming)
+CREATE TABLE IF NOT EXISTS public.user_mission_claims (
+  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id uuid REFERENCES public.users(id) NOT NULL,
+  mission_id uuid REFERENCES public.missions(id) NOT NULL,
+  claimed_at timestamp with time zone DEFAULT now(),
+  reset_key text -- e.g., '2023-10-27' for dailies, '2023-W43' for weeklies
+);
+
+-- 3. Indexes
+CREATE INDEX IF NOT EXISTS user_mission_claims_lookup_idx ON public.user_mission_claims (user_id, mission_id, reset_key);
+
+-- 4. RLS
+ALTER TABLE public.missions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_mission_claims ENABLE ROW LEVEL SECURITY;
+
+-- Everyone can see missions
+DROP POLICY IF EXISTS "Public Read Missions" ON public.missions;
+CREATE POLICY "Public Read Missions" ON public.missions FOR SELECT USING (true);
+
+-- Users can read/insert their own claims
+DROP POLICY IF EXISTS "Users Manage Claims" ON public.user_mission_claims;
+CREATE POLICY "Users Manage Claims" ON public.user_mission_claims FOR ALL USING (auth.uid() = user_id);
+
+-- 5. Seed Initial Missions (Upsert by title to prevent duplicates)
+INSERT INTO public.missions (title, description, type, reward_xp, icon, action_key, target_count) VALUES
+('Morning Light', 'Read the Daily Devotional.', 'Daily', 50, '🌅', 'read_devotional', 1),
+('Fellowship Voice', 'Post 3 messages in Chat.', 'Daily', 30, '💬', 'chat', 3),
+('Giver of Gifts', 'Enter a Giveaway.', 'Daily', 100, '🎁', 'enter_giveaway', 1),
+('Master Builder', 'Forge 3 Artifacts.', 'Weekly', 1000, '⚒️', 'forge', 3),
+('Tither', 'Contribute XP to a Community.', 'Weekly', 500, '🪙', 'tithe', 1),
+('Socialite', 'Share 5 items.', 'Weekly', 300, '📢', 'share', 5),
+('Collector', 'Acquire 1 Artifact from Market.', 'Career', 1500, '🛒', 'market_buy', 1),
+('Pilgrim', 'Reach Level 5.', 'Career', 2000, '⛰️', 'level_5', 1),
+('Chosen', 'Win a Raffle or Giveaway.', 'Career', 5000, '👑', 'win_giveaway', 1)
+ON CONFLICT DO NOTHING;
+
+COMMIT;

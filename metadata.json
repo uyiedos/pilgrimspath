@@ -1,0 +1,9 @@
+{
+  "name": "The Journey: Pilgrim's Path",
+  "description": "v10.0 Sovereign Stewardship. A spiritual sanctuary featuring AI-guided RPG campaigns, a complete digital economy (Marketplace, Forge, Staking), and real-time community fellowship tools (Support, Chat, Live Prayer).",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}

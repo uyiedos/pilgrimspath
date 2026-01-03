@@ -1,0 +1,140 @@
+
+-- =================================================================
+-- JOURNEY APP: BLOCKCHAIN-STYLE LEDGER & TREASURY V3
+-- =================================================================
+
+BEGIN;
+
+-- 1. STANDARDIZE TRANSACTIONS TABLE
+CREATE TABLE IF NOT EXISTS public.transactions (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    sender_id uuid REFERENCES public.users(id), 
+    receiver_id uuid REFERENCES public.users(id),
+    amount bigint NOT NULL,
+    type text NOT NULL, -- 'forge', 'burn', 'sale', 'reward', 'tithe', 'stake', 'claim'
+    metadata jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- Indexing for Block Explorer performance
+CREATE INDEX IF NOT EXISTS idx_tx_created_at ON public.transactions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tx_type ON public.transactions(type);
+CREATE INDEX IF NOT EXISTS idx_tx_users ON public.transactions(sender_id, receiver_id);
+
+-- 2. UPDATE TREASURY DASHBOARD STATS
+CREATE OR REPLACE FUNCTION get_treasury_dashboard_stats()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_balance bigint;
+    v_volume bigint;
+    v_liquid_supply bigint;
+    v_asset_supply bigint;
+    v_staked_supply bigint;
+    v_tx_count int;
+    v_holders jsonb;
+    v_txs jsonb;
+BEGIN
+    -- System Funds
+    SELECT balance, total_volume INTO v_balance, v_volume FROM public.treasury WHERE id = 1;
+    
+    -- Macro Supply Metrics
+    SELECT COALESCE(sum(total_points), 0) INTO v_liquid_supply FROM public.users;
+    SELECT COALESCE(sum(attached_xp), 0) INTO v_asset_supply FROM public.avatar_history;
+    SELECT COALESCE(sum(amount), 0) INTO v_staked_supply FROM public.stakes WHERE status = 'active';
+    
+    -- Tx Metrics
+    SELECT count(*) INTO v_tx_count FROM public.transactions;
+
+    -- Global Rich List (Top 15 by Net Worth)
+    SELECT jsonb_agg(t) INTO v_holders FROM (
+        SELECT 
+            u.username, 
+            u.avatar, 
+            u.archetype,
+            (u.total_points + COALESCE(SUM(ah.attached_xp), 0) + COALESCE((SELECT sum(amount) FROM public.stakes s WHERE s.user_id = u.id AND s.status = 'active'), 0)) as net_worth,
+            u.total_points as liquid,
+            COALESCE(SUM(ah.attached_xp), 0) as assets
+        FROM public.users u
+        LEFT JOIN public.avatar_history ah ON u.id = ah.user_id
+        GROUP BY u.id
+        ORDER BY 4 DESC 
+        LIMIT 15
+    ) t;
+
+    -- Recent Ledger Activity
+    SELECT jsonb_agg(t) INTO v_txs FROM (
+        SELECT 
+            tx.id, tx.amount, tx.type, tx.created_at, tx.metadata,
+            u_send.username as sender_name,
+            u_send.avatar as sender_avatar,
+            u_recv.username as receiver_name,
+            u_recv.avatar as receiver_avatar
+        FROM public.transactions tx
+        LEFT JOIN public.users u_send ON tx.sender_id = u_send.id
+        LEFT JOIN public.users u_recv ON tx.receiver_id = u_recv.id
+        ORDER BY tx.created_at DESC
+        LIMIT 50
+    ) t;
+
+    RETURN jsonb_build_object(
+        'balance', COALESCE(v_balance, 0),
+        'volume', COALESCE(v_volume, 0),
+        'liquid_supply', v_liquid_supply,
+        'asset_supply', v_asset_supply,
+        'staked_supply', v_staked_supply,
+        'net_worth', (v_liquid_supply + v_asset_supply + v_staked_supply),
+        'tx_count', COALESCE(v_tx_count, 0),
+        'holders', COALESCE(v_holders, '[]'::jsonb),
+        'transactions', COALESCE(v_txs, '[]'::jsonb)
+    );
+END;
+$$;
+
+-- 3. ENSURE ALL ACTIONS LOG TO LEDGER
+-- (Logic below updates existing functions to insert into public.transactions)
+
+-- Update FORGE to log
+CREATE OR REPLACE FUNCTION forge_and_list_artifact(p_user_id uuid, p_image_url text, p_style_prompt text, p_collection_name text, p_cost int)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_art_id uuid; v_list_id uuid; v_price bigint;
+BEGIN
+    IF (SELECT total_points FROM public.users WHERE id = p_user_id) < p_cost THEN RAISE EXCEPTION 'Low XP'; END IF;
+    UPDATE public.users SET total_points = total_points - p_cost WHERE id = p_user_id;
+    INSERT INTO public.avatar_history (user_id, avatar_url, style_prompt, collection_name, attached_xp) VALUES (p_user_id, p_image_url, p_style_prompt, p_collection_name, p_cost) RETURNING id INTO v_art_id;
+    v_price := floor(p_cost * 1.10);
+    INSERT INTO public.marketplace_listings (avatar_id, seller_id, price, attached_xp, status) VALUES (v_art_id, p_user_id, v_price, p_cost, 'active') RETURNING id INTO v_list_id;
+    
+    -- LOG TO LEDGER
+    INSERT INTO public.transactions (sender_id, amount, type, metadata) 
+    VALUES (p_user_id, p_cost, 'forge', jsonb_build_object('artifact_id', v_art_id, 'collection', p_collection_name));
+
+    RETURN jsonb_build_object('success', true, 'artifact_id', v_art_id, 'listing_id', v_list_id, 'list_price', v_price);
+END;
+$$;
+
+-- Update BUY to log
+CREATE OR REPLACE FUNCTION buy_avatar(p_listing_id uuid, p_buyer_id uuid)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE v_seller_id uuid; v_price bigint; v_fee bigint; v_share bigint; v_art_id uuid;
+BEGIN
+    SELECT seller_id, price, avatar_id INTO v_seller_id, v_price, v_art_id FROM public.marketplace_listings WHERE id = p_listing_id AND status = 'active' FOR UPDATE;
+    IF (SELECT total_points FROM public.users WHERE id = p_buyer_id) < v_price THEN RAISE EXCEPTION 'Low XP'; END IF;
+    v_fee := floor(v_price * 0.10); v_share := v_price - v_fee;
+    UPDATE public.users SET total_points = total_points - v_price WHERE id = p_buyer_id;
+    UPDATE public.users SET total_points = total_points + v_share WHERE id = v_seller_id;
+    UPDATE public.treasury SET balance = balance + v_fee, total_volume = total_volume + v_price WHERE id = 1;
+    UPDATE public.avatar_history SET user_id = p_buyer_id WHERE id = v_art_id;
+    UPDATE public.marketplace_listings SET status = 'sold' WHERE id = p_listing_id;
+    
+    -- LOG TO LEDGER
+    INSERT INTO public.transactions (sender_id, receiver_id, amount, type, metadata) 
+    VALUES (p_buyer_id, v_seller_id, v_price, 'sale', jsonb_build_object('listing_id', p_listing_id, 'artifact_id', v_art_id));
+
+    RETURN true;
+END;
+$$;
+
+COMMIT;

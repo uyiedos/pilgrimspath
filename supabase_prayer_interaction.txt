@@ -1,0 +1,79 @@
+
+-- =================================================================
+-- JOURNEY APP: SOCIAL INTERACTIONS UPDATE (Likes & Prayers)
+-- Run this in Supabase SQL Editor
+-- =================================================================
+
+BEGIN;
+
+-- 1. CREATE PRAYERS TRACKING TABLE
+-- Tracks who has prayed for which post (preventing duplicates)
+CREATE TABLE IF NOT EXISTS public.community_post_prayers (
+    post_id uuid REFERENCES public.community_posts(id) ON DELETE CASCADE NOT NULL,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    created_at timestamp with time zone DEFAULT now(),
+    PRIMARY KEY (post_id, user_id)
+);
+
+-- 2. ENABLE RLS FOR PRAYERS
+ALTER TABLE public.community_post_prayers ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Read Prayers" ON public.community_post_prayers;
+CREATE POLICY "Public Read Prayers" ON public.community_post_prayers FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Auth Insert Prayers" ON public.community_post_prayers;
+CREATE POLICY "Auth Insert Prayers" ON public.community_post_prayers FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Auth Delete Prayers" ON public.community_post_prayers;
+CREATE POLICY "Auth Delete Prayers" ON public.community_post_prayers FOR DELETE USING (auth.uid() = user_id);
+
+-- 3. ENSURE PRAYER COUNT COLUMN EXISTS
+ALTER TABLE public.community_posts ADD COLUMN IF NOT EXISTS prayer_count int DEFAULT 0;
+
+-- 4. RPC: TOGGLE LIKE (Handles Increment/Decrement)
+CREATE OR REPLACE FUNCTION toggle_post_like(p_post_id uuid, p_user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_liked boolean;
+BEGIN
+    SELECT EXISTS(SELECT 1 FROM public.community_post_likes WHERE post_id = p_post_id AND user_id = p_user_id) INTO v_liked;
+    
+    IF v_liked THEN
+        DELETE FROM public.community_post_likes WHERE post_id = p_post_id AND user_id = p_user_id;
+        UPDATE public.community_posts SET likes_count = GREATEST(0, likes_count - 1) WHERE id = p_post_id;
+        RETURN false; -- Now unliked
+    ELSE
+        INSERT INTO public.community_post_likes (post_id, user_id) VALUES (p_post_id, p_user_id);
+        UPDATE public.community_posts SET likes_count = likes_count + 1 WHERE id = p_post_id;
+        RETURN true; -- Now liked
+    END IF;
+END;
+$$;
+
+-- 5. RPC: TOGGLE PRAYER (Handles Increment/Decrement)
+CREATE OR REPLACE FUNCTION toggle_post_prayer(p_post_id uuid, p_user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_prayed boolean;
+BEGIN
+    SELECT EXISTS(SELECT 1 FROM public.community_post_prayers WHERE post_id = p_post_id AND user_id = p_user_id) INTO v_prayed;
+    
+    IF v_prayed THEN
+        DELETE FROM public.community_post_prayers WHERE post_id = p_post_id AND user_id = p_user_id;
+        UPDATE public.community_posts SET prayer_count = GREATEST(0, prayer_count - 1) WHERE id = p_post_id;
+        RETURN false; -- Now un-prayed
+    ELSE
+        INSERT INTO public.community_post_prayers (post_id, user_id) VALUES (p_post_id, p_user_id);
+        UPDATE public.community_posts SET prayer_count = prayer_count + 1 WHERE id = p_post_id;
+        RETURN true; -- Now prayed
+    END IF;
+END;
+$$;
+
+COMMIT;

@@ -1,0 +1,135 @@
+
+BEGIN;
+
+-- 1. Update Forge Logic to 1.3x listing
+CREATE OR REPLACE FUNCTION forge_and_list_artifact(
+    p_user_id uuid,
+    p_image_url text,
+    p_style_prompt text,
+    p_collection_name text,
+    p_cost int
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_user_balance bigint;
+    v_artifact_id uuid;
+    v_listing_id uuid;
+    v_list_price bigint;
+BEGIN
+    -- Check Balance
+    SELECT total_points INTO v_user_balance FROM public.users WHERE id = p_user_id;
+    
+    IF v_user_balance < p_cost THEN
+        RAISE EXCEPTION 'Insufficient Spirit XP to forge.';
+    END IF;
+
+    -- Deduct Cost
+    UPDATE public.users 
+    SET total_points = total_points - p_cost 
+    WHERE id = p_user_id;
+
+    -- Create Artifact (Value = Cost)
+    INSERT INTO public.avatar_history (user_id, avatar_url, style_prompt, collection_name, attached_xp)
+    VALUES (p_user_id, p_image_url, p_style_prompt, p_collection_name, p_cost)
+    RETURNING id INTO v_artifact_id;
+
+    -- Calculate List Price (Cost * 1.30)
+    -- This ensures 120% goes to Seller (20% Profit) and 10% to Treasury (Tax)
+    v_list_price := floor(p_cost * 1.30);
+
+    -- Auto-List
+    INSERT INTO public.marketplace_listings (avatar_id, seller_id, price, attached_xp, status)
+    VALUES (v_artifact_id, p_user_id, v_list_price, p_cost, 'active')
+    RETURNING id INTO v_listing_id;
+
+    -- Log
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (p_user_id, p_cost, 'forge_creation', jsonb_build_object('artifact_id', v_artifact_id, 'list_price', v_list_price));
+
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (p_user_id, 'achievement', jsonb_build_object('title', 'Artifact Forged', 'icon', '⚒️', 'cost', p_cost));
+
+    RETURN jsonb_build_object(
+        'success', true, 
+        'artifact_id', v_artifact_id, 
+        'listing_id', v_listing_id, 
+        'list_price', v_list_price
+    );
+END;
+$$;
+
+-- 2. Update Buy Logic for 1.3x Split (Strict enforcement)
+CREATE OR REPLACE FUNCTION buy_avatar(p_listing_id uuid, p_buyer_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_seller_id uuid;
+    v_avatar_id uuid;
+    v_price bigint;
+    v_attached_xp bigint;
+    v_buyer_balance bigint;
+    v_fee bigint;
+    v_seller_share bigint;
+BEGIN
+    SELECT seller_id, avatar_id, price, attached_xp 
+    INTO v_seller_id, v_avatar_id, v_price, v_attached_xp
+    FROM public.marketplace_listings
+    WHERE id = p_listing_id AND status = 'active'
+    FOR UPDATE;
+
+    IF NOT FOUND THEN RAISE EXCEPTION 'Listing not found or active'; END IF;
+    IF v_seller_id = p_buyer_id THEN RAISE EXCEPTION 'Cannot buy your own artifact'; END IF;
+
+    SELECT total_points INTO v_buyer_balance FROM public.users WHERE id = p_buyer_id;
+    IF v_buyer_balance < v_price THEN RAISE EXCEPTION 'Insufficient funds'; END IF;
+
+    -- Ensure values are not null
+    v_attached_xp := COALESCE(v_attached_xp, 500);
+
+    -- FEES: Check for Auto-List Ratio (Price approx 130% of Attached XP)
+    -- Allow for small rounding range (+/- 1)
+    IF v_price BETWEEN floor(v_attached_xp * 1.29) AND ceil(v_attached_xp * 1.31) THEN
+        -- BENEFICIAL TRADE SPLIT
+        -- Seller: 120% of Base (20% Profit)
+        -- Treasury: 10% of Base (Tax)
+        -- Any dust from price difference goes to Treasury
+        v_seller_share := floor(v_attached_xp * 1.20);
+        v_fee := v_price - v_seller_share;
+    ELSE
+        -- STANDARD TRADE SPLIT
+        -- 10% Tax on Total Price
+        v_fee := floor(v_price * 0.10);
+        v_seller_share := v_price - v_fee;
+    END IF;
+
+    -- Transfers
+    UPDATE public.users SET total_points = total_points - v_price WHERE id = p_buyer_id;
+    UPDATE public.users SET total_points = total_points + v_seller_share WHERE id = v_seller_id;
+    UPDATE public.treasury SET balance = balance + v_fee, total_volume = total_volume + v_price WHERE id = 1;
+
+    -- Asset Transfer
+    UPDATE public.avatar_history SET user_id = p_buyer_id WHERE id = v_avatar_id;
+    UPDATE public.marketplace_listings SET status = 'sold' WHERE id = p_listing_id;
+
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (p_buyer_id, 'achievement', jsonb_build_object('title', 'Market Acquisition', 'icon', '🛒', 'asset_value', v_attached_xp));
+
+    RETURN true;
+END;
+$$;
+
+-- 3. MASS UPDATE: REPRICE EXISTING LISTINGS
+-- Updates all currently active listings to follow the 1.3x rule.
+-- Sets a default attached_xp of 500 if missing.
+UPDATE public.marketplace_listings
+SET 
+    attached_xp = GREATEST(COALESCE(attached_xp, 0), 500),
+    price = floor(GREATEST(COALESCE(attached_xp, 0), 500) * 1.30)
+WHERE status = 'active';
+
+COMMIT;

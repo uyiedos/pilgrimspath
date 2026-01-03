@@ -1,0 +1,54 @@
+
+-- =================================================================
+-- JOURNEY APP: ASSET VALUE RECOVERY & LEADERBOARD V2
+-- =================================================================
+
+BEGIN;
+
+-- 1. BACKFILL LEGACY ARTIFACTS
+-- Sets a baseline value (500 XP) for any artifact that has 0 or NULL value.
+-- This ensures all existing items contribute to user Net Worth.
+UPDATE public.avatar_history
+SET attached_xp = 500
+WHERE attached_xp IS NULL OR attached_xp = 0;
+
+-- 2. CREATE LEADERBOARD VIEW (NET WORTH)
+-- Combines Liquid XP (Wallet) + Asset XP (Inventory Value)
+CREATE OR REPLACE VIEW public.player_leaderboard AS
+SELECT 
+    u.id,
+    u.username,
+    u.avatar,
+    u.badges,
+    u.archetype,
+    u.total_points as liquid_xp,
+    COALESCE(SUM(ah.attached_xp), 0) as asset_xp,
+    (u.total_points + COALESCE(SUM(ah.attached_xp), 0)) as net_worth
+FROM public.users u
+LEFT JOIN public.avatar_history ah ON u.id = ah.user_id
+GROUP BY u.id;
+
+-- 3. UPDATE GLOBAL STATS RPC
+-- Now calculates the True Value (TVL) of the ecosystem
+CREATE OR REPLACE FUNCTION public.get_global_stats()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  total_users_count int;
+  net_worth_sum bigint;
+BEGIN
+  SELECT count(*) INTO total_users_count FROM public.users;
+  
+  -- Summing Net Worth from the view
+  SELECT sum(net_worth) INTO net_worth_sum FROM public.player_leaderboard;
+  
+  RETURN jsonb_build_object(
+    'users', total_users_count,
+    'xp', COALESCE(net_worth_sum, 0)
+  );
+END;
+$$;
+
+COMMIT;

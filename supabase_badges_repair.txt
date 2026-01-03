@@ -1,0 +1,146 @@
+
+-- =================================================================
+-- JOURNEY APP: BADGE REPAIR & STREAK SYSTEM (v10.3)
+-- Run this in Supabase SQL Editor to fix missing badges.
+-- =================================================================
+
+BEGIN;
+
+-- 1. ADD STREAK TRACKING COLUMNS
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS login_streak int DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_login_date date;
+
+-- 2. RPC: PROCESS DAILY LOGIN (Handles Streaks & Time Badges)
+CREATE OR REPLACE FUNCTION process_daily_login(p_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_last_login date;
+    v_current_streak int;
+    v_today date := CURRENT_DATE;
+BEGIN
+    SELECT last_login_date, login_streak INTO v_last_login, v_current_streak 
+    FROM public.users WHERE id = p_user_id;
+
+    -- If first login ever
+    IF v_last_login IS NULL THEN
+        UPDATE public.users 
+        SET last_login_date = v_today, login_streak = 1 
+        WHERE id = p_user_id;
+        RETURN;
+    END IF;
+
+    -- If already logged in today, do nothing
+    IF v_last_login = v_today THEN
+        RETURN;
+    END IF;
+
+    -- If logged in yesterday, increment streak
+    IF v_last_login = (v_today - 1) THEN
+        v_current_streak := v_current_streak + 1;
+    ELSE
+        -- Streak broken
+        v_current_streak := 1;
+    END IF;
+
+    -- Update User
+    UPDATE public.users 
+    SET last_login_date = v_today, login_streak = v_current_streak 
+    WHERE id = p_user_id;
+
+    -- CHECK STREAK BADGES
+    -- Early Riser (7 Days)
+    IF v_current_streak >= 7 THEN
+        IF NOT ('early_riser' = ANY(SELECT unnest(badges) FROM public.users WHERE id = p_user_id)) THEN
+            UPDATE public.users SET badges = array_append(badges, 'early_riser') WHERE id = p_user_id;
+            INSERT INTO public.activity_feed (user_id, activity_type, details) 
+            VALUES (p_user_id, 'badge', '{"name": "Early Riser", "icon": "🌅"}'::jsonb);
+        END IF;
+    END IF;
+
+    -- Faithful Pilgrim (30 Days)
+    IF v_current_streak >= 30 THEN
+        IF NOT ('faithful_pilgrim' = ANY(SELECT unnest(badges) FROM public.users WHERE id = p_user_id)) THEN
+            UPDATE public.users SET badges = array_append(badges, 'faithful_pilgrim') WHERE id = p_user_id;
+            INSERT INTO public.activity_feed (user_id, activity_type, details) 
+            VALUES (p_user_id, 'badge', '{"name": "Faithful Pilgrim", "icon": "🔥"}'::jsonb);
+        END IF;
+    END IF;
+END;
+$$;
+
+-- 3. RPC: SYNC ALL USER BADGES (Retroactive Fix)
+-- This function checks ALL conditions and awards missing badges.
+CREATE OR REPLACE FUNCTION sync_user_badges(p_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_badges text[];
+    v_chat_count int;
+    v_disciplines_count int;
+    v_paul_progress int;
+    v_david_progress int;
+    v_pilgrim_progress int;
+    v_verses_count int;
+    v_plans_completed int;
+BEGIN
+    SELECT badges INTO v_badges FROM public.users WHERE id = p_user_id;
+
+    -- A. CHECK "THE VOICE" (100 Chat Messages)
+    SELECT count(*) INTO v_chat_count FROM public.chat_messages WHERE user_id = p_user_id;
+    IF v_chat_count >= 100 AND NOT ('voice' = ANY(v_badges)) THEN
+        UPDATE public.users SET badges = array_append(badges, 'voice') WHERE id = p_user_id;
+        v_badges := array_append(v_badges, 'voice'); -- Update local var for subsequent checks if needed
+    END IF;
+
+    -- B. CHECK "DISCIPLE OF PRACTICE" (4 Disciplines Learned)
+    -- Disciplines are logged in social_interactions with action_type='activity'
+    SELECT count(DISTINCT entity_context) INTO v_disciplines_count 
+    FROM public.social_interactions 
+    WHERE user_id = p_user_id AND action_type = 'activity';
+    
+    -- We assume there are 4 distinct activities: Lectio Divina, Verse Mapping, Prayer Walk, Scavenger Hunt
+    IF v_disciplines_count >= 4 AND NOT ('disciplined' = ANY(v_badges)) THEN
+        UPDATE public.users SET badges = array_append(badges, 'disciplined') WHERE id = p_user_id;
+    END IF;
+
+    -- C. CHECK CAMPAIGN BADGES
+    -- "Missionary" (Paul Completed) -> Paul has 1 level, so level_id > 1 means done
+    SELECT level_id INTO v_paul_progress FROM public.user_progress WHERE user_id = p_user_id AND game_id = 'paul';
+    IF v_paul_progress > 1 AND NOT ('missionary' = ANY(v_badges)) THEN
+        UPDATE public.users SET badges = array_append(badges, 'missionary') WHERE id = p_user_id;
+    END IF;
+
+    -- "Giant Slayer" (David Completed) -> David has 2 levels, so level_id > 2
+    SELECT level_id INTO v_david_progress FROM public.user_progress WHERE user_id = p_user_id AND game_id = 'david';
+    IF v_david_progress > 2 AND NOT ('slayer' = ANY(v_badges)) THEN
+        UPDATE public.users SET badges = array_append(badges, 'slayer') WHERE id = p_user_id;
+    END IF;
+
+    -- "Pilgrim Master" (Pilgrim Completed) -> Pilgrim has 5 levels, so level_id > 5
+    SELECT level_id INTO v_pilgrim_progress FROM public.user_progress WHERE user_id = p_user_id AND game_id = 'pilgrim';
+    IF v_pilgrim_progress > 5 AND NOT ('pilgrim_master' = ANY(v_badges)) THEN
+        UPDATE public.users SET badges = array_append(badges, 'pilgrim_master') WHERE id = p_user_id;
+    END IF;
+
+    -- D. CHECK "PRAYER WARRIOR" (20 Verses)
+    SELECT count(*) INTO v_verses_count FROM public.collected_verses WHERE user_id = p_user_id;
+    IF v_verses_count >= 20 AND NOT ('prayer' = ANY(v_badges)) THEN
+        UPDATE public.users SET badges = array_append(badges, 'prayer') WHERE id = p_user_id;
+    END IF;
+
+    -- E. CHECK "ARCHITECT" (Created Custom Plan)
+    -- Check if user has any plan with category 'Custom'
+    IF EXISTS (SELECT 1 FROM public.user_plans WHERE user_id = p_user_id AND category = 'Custom') 
+       AND NOT ('architect' = ANY(v_badges)) THEN
+        UPDATE public.users SET badges = array_append(badges, 'architect') WHERE id = p_user_id;
+    END IF;
+
+END;
+$$;
+
+COMMIT;

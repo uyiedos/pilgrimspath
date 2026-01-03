@@ -1,0 +1,80 @@
+
+-- =================================================================
+-- JOURNEY APP: EQUIPPING & DELISTING PROTOCOL
+-- =================================================================
+
+BEGIN;
+
+-- 1. RPC: EQUIP ARTIFACT
+-- This function updates the user's profile and ensures the item is delisted from the marketplace.
+CREATE OR REPLACE FUNCTION equip_artifact(p_user_id uuid, p_artifact_url text, p_type text)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_artifact_id uuid;
+BEGIN
+    -- Get the ID of the artifact being equipped
+    SELECT id INTO v_artifact_id 
+    FROM public.avatar_history 
+    WHERE avatar_url = p_artifact_url AND user_id = p_user_id
+    LIMIT 1;
+
+    -- 1. Cancel any active marketplace listing for this item
+    -- This enforces the "Equipped items cannot be sold" rule.
+    IF v_artifact_id IS NOT NULL THEN
+        UPDATE public.marketplace_listings 
+        SET status = 'cancelled'
+        WHERE avatar_id = v_artifact_id AND status = 'active';
+        
+        -- Log Delisting in ledger
+        INSERT INTO public.transactions (sender_id, amount, type, metadata)
+        VALUES (p_user_id, 0, 'delist', jsonb_build_object('artifact_id', v_artifact_id, 'reason', 'equipped'));
+    END IF;
+
+    -- 2. Update User Profile
+    IF p_type = 'avatar' THEN
+        UPDATE public.users SET avatar = p_artifact_url WHERE id = p_user_id;
+    ELSIF p_type = 'sanctuary' THEN
+        UPDATE public.users SET sanctuary_background = p_artifact_url WHERE id = p_user_id;
+    END IF;
+
+    RETURN true;
+END;
+$$;
+
+-- 2. UPDATE BUY_AVATAR (Safety Check)
+-- Prevents buying an item if it somehow remains equipped by the seller.
+CREATE OR REPLACE FUNCTION buy_avatar(p_listing_id uuid, p_buyer_id uuid)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+    v_seller_id uuid; v_avatar_id uuid; v_price bigint; v_fee bigint; v_share bigint; v_art_url text;
+BEGIN
+    SELECT seller_id, avatar_id, price INTO v_seller_id, v_avatar_id, v_price 
+    FROM public.marketplace_listings WHERE id = p_listing_id AND status = 'active' FOR UPDATE;
+    
+    IF NOT FOUND THEN RAISE EXCEPTION 'Listing not found or active'; END IF;
+    
+    -- Safety: Ensure seller doesn't have it equipped
+    SELECT avatar_url INTO v_art_url FROM public.avatar_history WHERE id = v_avatar_id;
+    IF EXISTS (SELECT 1 FROM public.users WHERE id = v_seller_id AND (avatar = v_art_url OR sanctuary_background = v_art_url)) THEN
+        RAISE EXCEPTION 'This artifact is currently equipped by the seller and cannot be sold.';
+    END IF;
+
+    IF (SELECT total_points FROM public.users WHERE id = p_buyer_id) < v_price THEN RAISE EXCEPTION 'Low XP'; END IF;
+    v_fee := floor(v_price * 0.10); v_share := v_price - v_fee;
+    UPDATE public.users SET total_points = total_points - v_price WHERE id = p_buyer_id;
+    UPDATE public.users SET total_points = total_points + v_share WHERE id = v_seller_id;
+    UPDATE public.treasury SET balance = balance + v_fee, total_volume = total_volume + v_price WHERE id = 1;
+    UPDATE public.avatar_history SET user_id = p_buyer_id WHERE id = v_avatar_id;
+    UPDATE public.marketplace_listings SET status = 'sold' WHERE id = p_listing_id;
+    
+    INSERT INTO public.transactions (sender_id, receiver_id, amount, type, metadata) 
+    VALUES (p_buyer_id, v_seller_id, v_price, 'sale', jsonb_build_object('listing_id', p_listing_id, 'artifact_id', v_avatar_id));
+
+    RETURN true;
+END;
+$$;
+
+COMMIT;

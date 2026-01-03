@@ -1,0 +1,118 @@
+
+-- =================================================================
+-- JOURNEY APP: KINGDOM STEWARDSHIP (DONATIONS) V2.1
+-- =================================================================
+
+BEGIN;
+
+-- 1. Ensure Table Exists
+CREATE TABLE IF NOT EXISTS public.donation_claims (
+    id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+    user_id uuid REFERENCES public.users(id) NOT NULL,
+    email text,
+    amount float8 NOT NULL,
+    currency text NOT NULL,
+    payment_method text NOT NULL,
+    tx_reference text NOT NULL,
+    status text DEFAULT 'pending',
+    created_at timestamp with time zone DEFAULT now()
+);
+
+-- 2. ADD COLUMNS (Reason, Name, Email)
+ALTER TABLE public.donation_claims ADD COLUMN IF NOT EXISTS reason text;
+ALTER TABLE public.donation_claims ADD COLUMN IF NOT EXISTS donor_name text;
+ALTER TABLE public.donation_claims ADD COLUMN IF NOT EXISTS donor_email text;
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS donation_claims_user_idx ON public.donation_claims(user_id);
+CREATE INDEX IF NOT EXISTS donation_claims_status_idx ON public.donation_claims(status);
+
+-- RLS
+ALTER TABLE public.donation_claims ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "User Submit Donation Claim" ON public.donation_claims;
+CREATE POLICY "User Submit Donation Claim" ON public.donation_claims 
+FOR INSERT TO authenticated 
+WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "User View Own Claims" ON public.donation_claims;
+CREATE POLICY "User View Own Claims" ON public.donation_claims 
+FOR SELECT USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Admin Manage Claims" ON public.donation_claims;
+CREATE POLICY "Admin Manage Claims" ON public.donation_claims 
+FOR ALL USING (
+    EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin')
+);
+
+-- 3. ADMIN RPC: VERIFY DONATION & GRANT XP
+CREATE OR REPLACE FUNCTION verify_donation_claim(p_claim_id uuid, p_admin_user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_claim record;
+    v_xp_amount int;
+    v_usd_value float8;
+BEGIN
+    -- Verify Admin
+    IF NOT EXISTS (SELECT 1 FROM public.users WHERE id = p_admin_user_id AND role = 'admin') THEN
+        RAISE EXCEPTION 'Access Denied';
+    END IF;
+
+    -- Get Claim
+    SELECT * INTO v_claim FROM public.donation_claims WHERE id = p_claim_id AND status = 'pending';
+    IF NOT FOUND THEN RAISE EXCEPTION 'Claim not found or already processed'; END IF;
+
+    -- Normalize Currency to USD (Rough estimates for conversion logic)
+    IF v_claim.currency = 'NGN' THEN
+        v_usd_value := v_claim.amount / 1000.0;
+    ELSE
+        v_usd_value := v_claim.amount;
+    END IF;
+
+    -- Calculate XP ($1 = 2000 XP)
+    v_xp_amount := floor(v_usd_value * 2000);
+
+    -- 1. Grant XP
+    UPDATE public.users 
+    SET total_points = total_points + v_xp_amount 
+    WHERE id = v_claim.user_id;
+
+    -- 2. Mark Claim Approved
+    UPDATE public.donation_claims 
+    SET status = 'approved' 
+    WHERE id = p_claim_id;
+
+    -- 3. Log to Activity Feed (Hall of Fame)
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (
+        v_claim.user_id, 
+        'achievement', 
+        jsonb_build_object(
+            'title', 'Kingdom Partner', 
+            'icon', '❤️', 
+            'reward', v_xp_amount, 
+            'message', 'Donation Verified: ' || COALESCE(v_claim.reason, 'Offering')
+        )
+    );
+
+    -- 4. Log to Treasury Ledger
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (
+        NULL, -- System/External
+        v_xp_amount, 
+        'donation_reward', 
+        jsonb_build_object(
+            'claim_id', p_claim_id, 
+            'fiat_val', v_claim.amount,
+            'donor_name', v_claim.donor_name
+        )
+    );
+
+    RETURN true;
+END;
+$$;
+
+COMMIT;

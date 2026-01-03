@@ -1,0 +1,149 @@
+
+-- =================================================================
+-- JOURNEY APP: TREASURY FILTER & STATS FIX
+-- =================================================================
+
+BEGIN;
+
+-- 1. GET FILTERED LEDGER ENTRIES
+-- Allows the frontend to efficiently fetch specific transaction types (Burn, Forge, etc)
+CREATE OR REPLACE FUNCTION get_ledger_entries(p_filter text DEFAULT 'all', p_limit int DEFAULT 50)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_txs jsonb;
+BEGIN
+    SELECT jsonb_agg(t) INTO v_txs FROM (
+        SELECT 
+            tx.id, tx.amount, tx.type, tx.created_at, tx.metadata,
+            u_send.username as sender_name,
+            u_send.avatar as sender_avatar,
+            u_recv.username as receiver_name,
+            u_recv.avatar as receiver_avatar
+        FROM public.transactions tx
+        LEFT JOIN public.users u_send ON tx.sender_id = u_send.id
+        LEFT JOIN public.users u_recv ON tx.receiver_id = u_recv.id
+        WHERE (p_filter = 'all' OR tx.type = p_filter)
+        ORDER BY tx.created_at DESC
+        LIMIT p_limit
+    ) t;
+
+    RETURN COALESCE(v_txs, '[]'::jsonb);
+END;
+$$;
+
+-- 2. ROBUST ANALYTICS (Prevents Null Crashes)
+CREATE OR REPLACE FUNCTION get_treasury_analytics()
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_balance bigint;
+    v_volume bigint;
+    v_liquid_supply bigint;
+    v_asset_supply bigint;
+    v_staked_supply bigint;
+    v_net_worth bigint;
+    v_tx_count int;
+    v_forge_vol bigint;
+    v_burn_vol bigint;
+    v_transfer_vol bigint;
+    v_weekly_growth jsonb;
+    v_tx_history jsonb;
+    v_holders jsonb;
+    v_txs jsonb;
+BEGIN
+    -- 1. BASIC STATS (Use COALESCE everywhere)
+    SELECT COALESCE(balance, 0), COALESCE(total_volume, 0) INTO v_balance, v_volume FROM public.treasury WHERE id = 1;
+    SELECT COALESCE(sum(total_points), 0) INTO v_liquid_supply FROM public.users;
+    SELECT COALESCE(sum(attached_xp), 0) INTO v_asset_supply FROM public.avatar_history;
+    SELECT COALESCE(sum(amount), 0) INTO v_staked_supply FROM public.stakes WHERE status = 'active';
+    v_net_worth := v_liquid_supply + v_asset_supply + v_staked_supply;
+    SELECT count(*) INTO v_tx_count FROM public.transactions;
+
+    -- 2. TOKEN OVERVIEW
+    SELECT COALESCE(SUM(amount), 0) INTO v_forge_vol FROM public.transactions WHERE type IN ('forge', 'forge_creation');
+    SELECT COALESCE(SUM(amount), 0) INTO v_burn_vol FROM public.transactions WHERE type = 'burn';
+    SELECT COALESCE(SUM(amount), 0) INTO v_transfer_vol FROM public.transactions WHERE type IN ('sale', 'tithe', 'giveaway_entry', 'payout');
+
+    -- 3. WEEKLY GROWTH (Safe aggregation)
+    SELECT jsonb_agg(t) INTO v_weekly_growth FROM (
+        WITH weeks AS (
+            SELECT generate_series(
+                date_trunc('week', now() - interval '8 weeks'), 
+                date_trunc('week', now()), 
+                '1 week'::interval
+            ) as week_start
+        )
+        SELECT 
+            to_char(w.week_start, 'MM-DD') as week_label,
+            (SELECT count(*) FROM public.users u WHERE date_trunc('week', u.joined_date::timestamp) = w.week_start)::int as new_users,
+            (SELECT COALESCE(SUM(amount), 0) FROM public.transactions tx WHERE date_trunc('week', tx.created_at) = w.week_start AND tx.type IN ('reward', 'achievement', 'staking_reward'))::bigint as xp_generated
+        FROM weeks w
+        ORDER BY w.week_start ASC
+    ) t;
+
+    -- 4. ACTIVITY HISTORY
+    SELECT jsonb_agg(t) INTO v_tx_history FROM (
+        SELECT 
+            to_char(created_at, 'MM-DD') as date_label,
+            count(*)::int as tx_count,
+            sum(amount)::bigint as tx_volume
+        FROM public.transactions
+        WHERE created_at > now() - interval '14 days'
+        GROUP BY 1
+        ORDER BY 1 ASC
+    ) t;
+
+    -- 5. TOP HOLDERS
+    SELECT jsonb_agg(t) INTO v_holders FROM (
+        SELECT 
+            u.username, 
+            u.avatar, 
+            u.archetype,
+            (u.total_points + COALESCE(SUM(ah.attached_xp), 0) + COALESCE((SELECT sum(amount) FROM public.stakes s WHERE s.user_id = u.id AND s.status = 'active'), 0)) as net_worth,
+            u.total_points as liquid,
+            COALESCE(SUM(ah.attached_xp), 0) as assets
+        FROM public.users u
+        LEFT JOIN public.avatar_history ah ON u.id = ah.user_id
+        GROUP BY u.id
+        ORDER BY 4 DESC 
+        LIMIT 10
+    ) t;
+
+    -- 6. RECENT TRANSACTIONS (Unfiltered default view)
+    SELECT jsonb_agg(t) INTO v_txs FROM (
+        SELECT 
+            tx.id, tx.amount, tx.type, tx.created_at, tx.metadata,
+            u_send.username as sender_name,
+            u_recv.username as receiver_name
+        FROM public.transactions tx
+        LEFT JOIN public.users u_send ON tx.sender_id = u_send.id
+        LEFT JOIN public.users u_recv ON tx.receiver_id = u_recv.id
+        ORDER BY tx.created_at DESC
+        LIMIT 20
+    ) t;
+
+    RETURN jsonb_build_object(
+        'balance', v_balance,
+        'volume', v_volume,
+        'liquid_supply', v_liquid_supply,
+        'asset_supply', v_asset_supply,
+        'staked_supply', v_staked_supply,
+        'net_worth', v_net_worth,
+        'tx_count', v_tx_count,
+        'forge_volume', v_forge_vol,
+        'burn_volume', v_burn_vol,
+        'transfer_volume', v_transfer_vol,
+        'weekly_growth', COALESCE(v_weekly_growth, '[]'::jsonb),
+        'tx_history', COALESCE(v_tx_history, '[]'::jsonb),
+        'holders', COALESCE(v_holders, '[]'::jsonb),
+        'transactions', COALESCE(v_txs, '[]'::jsonb)
+    );
+END;
+$$;
+
+COMMIT;

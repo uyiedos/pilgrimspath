@@ -1,0 +1,87 @@
+
+-- =================================================================
+-- JOURNEY APP: SACRED DISSOLUTION (BURN) PROTOCOL V2
+-- =================================================================
+
+BEGIN;
+
+CREATE OR REPLACE FUNCTION burn_artifact(p_artifact_id uuid, p_user_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_artifact record;
+    v_attached_xp bigint;
+    v_user_share bigint;
+    v_treasury_share bigint;
+BEGIN
+    -- 1. Get Artifact and Verify Ownership
+    SELECT * INTO v_artifact 
+    FROM public.avatar_history 
+    WHERE id = p_artifact_id AND user_id = p_user_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Artifact not found or you are not the rightful owner.';
+    END IF;
+
+    -- Safety Check: Ensure it's not equipped
+    IF EXISTS (SELECT 1 FROM public.users WHERE id = p_user_id AND (avatar = v_artifact.avatar_url OR sanctuary_background = v_artifact.avatar_url)) THEN
+        RAISE EXCEPTION 'Cannot dissolve an equipped artifact. Unequip it first.';
+    END IF;
+
+    v_attached_xp := COALESCE(v_artifact.attached_xp, 0);
+
+    -- 2. Check if item is currently listed and cancel listing if so
+    DELETE FROM public.marketplace_listings 
+    WHERE avatar_id = p_artifact_id AND status = 'active';
+
+    -- 3. Calculate 50/50 Split
+    v_user_share := floor(v_attached_xp * 0.50);
+    v_treasury_share := v_attached_xp - v_user_share;
+
+    -- 4. Distribute Wealth
+    -- To User (Liquid XP)
+    UPDATE public.users SET total_points = total_points + v_user_share WHERE id = p_user_id;
+    -- To Treasury (Surplus Reserve)
+    UPDATE public.treasury SET 
+        balance = balance + v_treasury_share,
+        total_volume = total_volume + v_attached_xp -- Count the full value as volume processed
+    WHERE id = 1;
+
+    -- 5. Delete Artifact (The actual "Burn")
+    DELETE FROM public.avatar_history WHERE id = p_artifact_id;
+
+    -- 6. Log to Global Ledger
+    -- We log one transaction of type 'burn' with the treasury portion as the amount (the "tax")
+    -- and metadata describing the reclamation.
+    INSERT INTO public.transactions (sender_id, amount, type, metadata)
+    VALUES (
+        p_user_id, 
+        v_treasury_share, 
+        'burn', 
+        jsonb_build_object(
+            'artifact_id', p_artifact_id, 
+            'reclaimed_by_user', v_user_share, 
+            'total_value', v_attached_xp
+        )
+    );
+
+    -- 7. Log Global Activity
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (p_user_id, 'achievement', jsonb_build_object(
+        'title', 'Sacred Dissolution', 
+        'icon', '🔥', 
+        'reward', v_user_share,
+        'message', 'Returned an artifact to the void. Reclaimed 50% XP.'
+    ));
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'reclaimed_xp', v_user_share,
+        'treasury_tithe', v_treasury_share
+    );
+END;
+$$;
+
+COMMIT;

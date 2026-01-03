@@ -1,0 +1,64 @@
+
+-- =================================================================
+-- V9.0 MILESTONE: ADMIN GENESIS PROTOCOL
+-- =================================================================
+
+BEGIN;
+
+-- 1. SECURE THE THRONE (Set Single Admin)
+-- This ensures ONLY the specified email is admin. All others become standard users.
+UPDATE public.users 
+SET role = 'admin' 
+WHERE email = 'uyiedos@gmail.com';
+
+UPDATE public.users 
+SET role = 'user' 
+WHERE email != 'uyiedos@gmail.com';
+
+-- Optional: Ensure username matches if the user exists
+UPDATE public.users
+SET username = 'blackralph'
+WHERE email = 'uyiedos@gmail.com';
+
+-- 2. CREATE PROMOTION LOGIC (RPC)
+-- Allows the Admin to promote/demote others via the Dashboard
+CREATE OR REPLACE FUNCTION promote_user(p_target_id uuid, p_new_role text)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_actor_role text;
+BEGIN
+    -- Check if the person calling this function is an admin
+    SELECT role INTO v_actor_role FROM public.users WHERE id = auth.uid();
+    
+    IF v_actor_role != 'admin' THEN
+        RAISE EXCEPTION 'Access Denied: Only Admins can change roles.';
+    END IF;
+
+    -- Validate role
+    IF p_new_role NOT IN ('user', 'admin', 'moderator') THEN
+        RAISE EXCEPTION 'Invalid Role';
+    END IF;
+
+    -- Update the target user
+    UPDATE public.users SET role = p_new_role WHERE id = p_target_id;
+
+    -- Log to Activity Feed
+    INSERT INTO public.activity_feed (user_id, activity_type, details)
+    VALUES (
+        auth.uid(), 
+        'broadcast', 
+        jsonb_build_object(
+            'message', 'System Authority Updated', 
+            'target', p_target_id, 
+            'new_role', p_new_role
+        )
+    );
+
+    RETURN true;
+END;
+$$;
+
+COMMIT;
