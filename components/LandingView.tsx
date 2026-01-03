@@ -262,7 +262,7 @@ const LandingView: React.FC<LandingViewProps> = ({ user, onNavigate, language })
           <div className="bg-black/60 backdrop-blur-md border border-yellow-600/30 rounded-2xl p-6 text-center">
             <div className="text-xs text-yellow-400 font-retro uppercase tracking-widest mb-3">🎁 Sponsor Ads</div>
             <button 
-              onClick={() => window.open('https://example.com/sponsors', '_blank')}
+              onClick={() => window.open('https://otieu.com/4/9489422', '_blank')}
               className="text-sm text-gray-300 hover:text-yellow-300 transition-colors font-serif"
             >
               Click to Reveal Special Offers 🎁

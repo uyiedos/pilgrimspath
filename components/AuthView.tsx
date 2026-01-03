@@ -92,6 +92,41 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
     return () => clearInterval(interval);
   }, []);
 
+  const handleGuestLogin = async () => {
+    setIsLoading(true);
+    setErrorMsg('');
+    AudioSystem.playVoxelTap();
+
+    try {
+      // Create a guest user with predefined credentials for Play Console reviewers
+      const guestUser: User = {
+        id: 'guest-user-play-console',
+        email: 'guest@thejourney.app',
+        username: 'GuestPilgrim',
+        avatar: AVATARS[0],
+        joinedDate: new Date().toISOString(),
+        lastDailyClaim: 0,
+        dailyPointsEarned: 0,
+        lastActivityDate: new Date().toISOString().split('T')[0],
+        badges: [],
+        referralCode: 'GUEST',
+        referralsCount: 0,
+        archetype: 'Wanderer',
+        totalPoints: 1000, // Give guest some starting points to explore
+        role: 'guest' // Mark as guest user
+      };
+
+      // Simulate a brief loading time for better UX
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      onLogin(guestUser, selectedLanguage);
+    } catch (err: any) {
+      setErrorMsg("Guest access temporarily unavailable. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -322,6 +357,26 @@ const AuthView: React.FC<AuthViewProps> = ({ onLogin }) => {
               
               <div className="w-full h-px bg-gray-800 my-2"></div>
 
+              {/* Guest Login Button for Play Console Reviewers */}
+              <button 
+                onClick={handleGuestLogin}
+                disabled={isLoading}
+                className="w-full py-3 px-4 bg-green-600/20 hover:bg-green-600/30 border-2 border-green-500/50 text-green-400 rounded-xl transition-all text-sm font-mono uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isLoading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-green-400 border-t-transparent rounded-full animate-spin"></div>
+                    Connecting...
+                  </>
+                ) : (
+                  <>
+                    👤 Guest Access
+                  </>
+                )}
+              </button>
+              <p className="text-[10px] text-gray-500 font-mono">
+                For Play Console Reviewers • No credentials required
+              </p>
                          </div>
         </div>
 

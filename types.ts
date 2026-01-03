@@ -101,7 +101,7 @@ export interface User {
   dailyPointsEarned: number; 
   lastActivityDate: string; 
   badges: string[]; 
-  role?: 'user' | 'admin';
+  role?: 'user' | 'admin' | 'guest';
   difficulty?: DifficultyMode;
   referralCode?: string; 
   referralsCount?: number; 
